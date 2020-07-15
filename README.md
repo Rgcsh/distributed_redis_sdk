@@ -1,0 +1,2 @@
+# distributed_redis_sdk
+使用一致性hash实现python falsk版的分布式redis 客户端sdk包
