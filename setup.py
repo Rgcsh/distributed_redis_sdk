@@ -5,6 +5,7 @@
 
 import os
 from codecs import open
+
 from setuptools import setup
 
 here = os.path.abspath(os.path.dirname(__file__))
@@ -18,6 +19,13 @@ package_data = {
 
 requires = [
     'redis==3.5.3',
+    'click==7.1.2',
+    'Flask==1.1.2',
+    'itsdangerous==1.1.0',
+    'Jinja2==2.11.2',
+    'MarkupSafe==1.1.1',
+    'redis==3.5.3',
+    'Werkzeug==1.0.1',
 ]
 
 about = {}
@@ -56,4 +64,3 @@ setup(
         'Programming Language :: Python :: Implementation :: PyPy'
     ],
 )
-

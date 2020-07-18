@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-# (C) Rgc, 2020
-# All rights reserved
-# @Author: 'Rgc <2020956572@qq.com>'
 """
-提供根据key获取分布式redis节点 对象的功能
+    flask_caching
+    ~~~~~~~~~~~~~
+
+    Adds cache support to your application.
+
+    :copyright: (c) 2010 by Thadeus Burgess.
+    :license: BSD, see LICENSE for more details.
 """
 import base64
 import functools
@@ -12,24 +15,12 @@ import inspect
 import logging
 import string
 import uuid
+import warnings
 from collections import OrderedDict
 
-import redis
 from flask import current_app, request, url_for
-from redis import Redis, ConnectionPool
+from werkzeug.utils import import_string
 
-from .backends.base import iteritems_wrapper
-from .backends.rediscache import RedisCache
-from .exception import InvalidConfigException
-from .log_obj import log
-from .utils.consistency_hash import ConsistencyHash
-from .utils.constant import *
-from .utils.redis_action import get_redis_obj, get_hash_ring_map, get_func_name
-
-try:
-    import cPickle as pickle
-except ImportError:  # pragma: no cover
-    import pickle
 __version__ = "1.8.0"
 
 logger = logging.getLogger(__name__)
@@ -148,254 +139,160 @@ def make_template_fragment_key(fragment_name, vary_on=[]):
     return TEMPLATE_FRAGMENT_KEY_TEMPLATE % (fragment_name, "_".join(vary_on))
 
 
-class DistributedRedisSdk(Redis):
-    """分布式redis客户端类"""
+class Cache(object):
+    """This class is used to control the cache objects."""
 
-    def __init__(self, app=None, config=None):
-        super(DistributedRedisSdk, self).__init__()
-        # Flask的config必须是dict或者None
+    def __init__(self, app=None, with_jinja2_ext=True, config=None):
         if not (config is None or isinstance(config, dict)):
-            raise InvalidConfigException("`config`参数必须是dict的实例或者None")
+            raise ValueError("`config` must be an instance of dict or None")
 
-        # 存储配置
+        self.with_jinja2_ext = with_jinja2_ext
         self.config = config
 
-        self.k_redis_host = k_redis_host
-        self.k_redis_port = k_redis_port
-        self.k_redis_password = k_redis_password
-        self.k_redis_db = k_redis_db
-        self.key_prefix = k_prefix or ""
-
-        self.manager_redis_obj = None
-        # 加载时即配置
         if app is not None:
-            self.app = app
             self.init_app(app, config)
 
     def init_app(self, app, config=None):
-        """ Flask扩展懒加载实现 """
-
-        # Flask的config必须是dict或者None
+        """This is used to initialize cache with your app object"""
         if not (config is None or isinstance(config, dict)):
-            raise InvalidConfigException("`config`参数必须是dict的实例或者None")
+            raise ValueError("`config` must be an instance of dict or None")
 
-        # 更新所有的配置
-        basic_config = app.config.copy()
+        #: Ref PR #44.
+        #: Do not set self.app in the case a single instance of the Cache
+        #: object is being used for multiple app instances.
+        #: Example use case would be Cache shipped as part of a blueprint
+        #: or utility library.
+
+        base_config = app.config.copy()
         if self.config:
-            basic_config.update(self.config)
+            base_config.update(self.config)
         if config:
-            basic_config.update(config)
-        config = basic_config
+            base_config.update(config)
+        config = base_config
 
-        # 设置参数
-        self.k_redis_host = config.get(k_redis_host)
-        self.k_redis_port = config.get(k_redis_port)
-        self.k_redis_password = config.get(k_redis_password)
-        self.k_redis_db = config.get(k_redis_db)
-        self.key_prefix = config.get(k_prefix)
+        config.setdefault("CACHE_DEFAULT_TIMEOUT", 300)
+        config.setdefault("CACHE_IGNORE_ERRORS", False)
+        config.setdefault("CACHE_THRESHOLD", 500)
+        config.setdefault("CACHE_KEY_PREFIX", "flask_cache_")
+        config.setdefault("CACHE_MEMCACHED_SERVERS", None)
+        config.setdefault("CACHE_DIR", None)
+        config.setdefault("CACHE_OPTIONS", None)
+        config.setdefault("CACHE_ARGS", [])
+        config.setdefault("CACHE_TYPE", "null")
+        config.setdefault("CACHE_NO_NULL_WARNING", False)
 
-        self.manager_redis_obj = Redis(self.k_redis_host, self.k_redis_port, self.k_redis_db, self.k_redis_password)
+        if (
+            config["CACHE_TYPE"] == "null"
+            and not config["CACHE_NO_NULL_WARNING"]
+        ):
+            warnings.warn(
+                "Flask-Caching: CACHE_TYPE is set to null, "
+                "caching is effectively disabled."
+            )
 
-        # 检查redis节点集群是否有 节点
-        if not get_hash_ring_map(self.manager_redis_obj):
-            raise Exception('redis节点集群 没有节点,请添加!')
+        if config["CACHE_TYPE"] == "filesystem" and config["CACHE_DIR"] is None:
+            warnings.warn(
+                "Flask-Caching: CACHE_TYPE is set to filesystem but no "
+                "CACHE_DIR is set."
+            )
 
+        if self.with_jinja2_ext:
+            from .jinja2ext import CacheExtension, JINJA_CACHE_ATTR_NAME
+
+            setattr(app.jinja_env, JINJA_CACHE_ATTR_NAME, self)
+            app.jinja_env.add_extension(CacheExtension)
+
+        self._set_cache(app, config)
+
+    def _set_cache(self, app, config):
+        import_me = config["CACHE_TYPE"]
+        if "." not in import_me:
+            from . import backends
+
+            try:
+                cache_obj = getattr(backends, import_me)
+            except AttributeError:
+                raise ImportError(
+                    "%s is not a valid Flask-Caching backend" % (import_me)
+                )
+        else:
+            cache_obj = import_string(import_me)
+
+        cache_args = config["CACHE_ARGS"][:]
+        cache_options = {"default_timeout": config["CACHE_DEFAULT_TIMEOUT"]}
+
+        if config["CACHE_OPTIONS"]:
+            cache_options.update(config["CACHE_OPTIONS"])
+
+        if not hasattr(app, "extensions"):
+            app.extensions = {}
+
+        app.extensions.setdefault("cache", {})
+        app.extensions["cache"][self] = cache_obj(
+            app, config, cache_args, cache_options
+        )
         self.app = app
-
-        # 扩展原始Flask功能
-        self.extend_flask_middleware(app)
-
-        app.extensions["distributed_redis_sdk"] = self
-
-    def get_redis_node_obj(self, key):
-        """
-        通过key生成hashkey,获取对应 节点的redis obj
-        :param key:
-        :return:
-        """
-        hash_map = get_hash_ring_map(self.manager_redis_obj)
-        node_url = ConsistencyHash(hash_map).get_node(key)
-        return redis.from_url(node_url)
-
-    def extend_flask_middleware(self, app):
-        """ 扩展Flask中间件
-        """
-        # 在init_app时，为flask app注册权限中间件
-        log.info("成功注册 分布式缓存 中间件")
-
-    def execute_command(self, *args, **options):
-        """
-        Execute a command and return a parsed response
-        继承自Redis对象的 执行具体命令的函数,对此函数进行修改
-        修改内容为:
-        通过key调用一致性hash算法获取对应redis节点的url
-        通过url获取连接池,然后进行后续原来的操作
-        优点:
-        在调用此sdk时,可以像使用普通 redis sdk一样操作,如 DistributedRedisSdk().set() 等等方法进行操作
-
-        警告:
-        1.Redis的有些命令函数(如:client_id) 不需要 key,所以在调用此函数时会存在 参数不足2个的情况,针对此情况 直接Raise错误
-        2.Redis的有些命令函数 的第一个参数不是 key,即使分配到了节点上也是错误的结果,这种也不能使用
-        :param args:
-        :param options:
-        :return:
-        """
-        # 某些命令 不能分配到节点,此处进行校验
-        # 判断参数长度不能小于2个(如果小于,说明肯定没有key)
-        if len(args) < 2:
-            raise Exception('此分布式redis对象不支持使用此方法,因为没有key,无法定位到具体redis节点,'
-                            '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
-
-        # 通过 command_name 找到对应的函数名,然后找到对应参数
-        command_name = args[0]
-        func_name = get_func_name(command_name)
-        command_func = getattr(Redis, func_name)
-        func_params = command_func.__code__.co_varnames
-        # 第二个参数 进行校验,command_name不在指定的list中
-        allow_command_list = ['touch']
-        if func_params[1] not in ['key', 'keys', 'name', 'names', 'src'] and func_name not in allow_command_list:
-            raise Exception('此分布式redis对象不支持使用此方法,因为没有key或name,无法定位到具体redis节点,'
-                            '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
-
-        # 某些命令不能找到对应节点
-        not_allowed_command_list = ['config_set']
-        if command_name in not_allowed_command_list:
-            raise Exception('此分布式redis对象不支持使用此方法,无法定位到具体redis节点,'
-                            '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
-
-        # 获取 执行的redis命令
-        # 获取操作的 key
-        key = args[1]
-        # 通过key获取对应的节点url
-        hash_map = get_hash_ring_map(self.manager_redis_obj)
-        node_url = ConsistencyHash(hash_map).get_node(key)
-        log.info(f'node_url:{node_url},key:{key},command_name:{command_name}')
-        # 通过节点url获取redis对象的 连接池
-        pool = ConnectionPool.from_url(node_url)
-        conn = self.connection or pool.get_connection(command_name, **options)
-        try:
-            conn.send_command(*args)
-            return self.parse_response(conn, command_name, **options)
-        except (ConnectionError, TimeoutError) as e:
-            conn.disconnect()
-            if not (conn.retry_on_timeout and isinstance(e, TimeoutError)):
-                raise
-            conn.send_command(*args)
-            return self.parse_response(conn, command_name, **options)
-        finally:
-            if not self.connection:
-                pool.release(conn)
 
     @property
     def cache(self):
         app = current_app or self.app
         return app.extensions["cache"][self]
 
-    def dump_object(self, value):
-        """Dumps an object into a string for redis.  By default it serializes
-        integers as regular string and pickle dumps everything else.
+    def get(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.get(*args, **kwargs)
+
+    def set(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.set(*args, **kwargs)
+
+    def add(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.add(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.delete(*args, **kwargs)
+
+    def delete_many(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.delete_many(*args, **kwargs)
+
+    def clear(self):
+        """Proxy function for internal cache object."""
+        return self.cache.clear()
+
+    def get_many(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.get_many(*args, **kwargs)
+
+    def set_many(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.set_many(*args, **kwargs)
+
+    def get_dict(self, *args, **kwargs):
+        """Proxy function for internal cache object."""
+        return self.cache.get_dict(*args, **kwargs)
+
+    def unlink(self, *args, **kwargs):
+        """Proxy function for internal cache object
+        only support Redis
         """
-        t = type(value)
-        if t == int:
-            return str(value).encode("ascii")
-        return b"!" + pickle.dumps(value)
-
-    def _get_prefix(self):
-        return (
-            self.key_prefix
-            if isinstance(self.key_prefix, str)
-            else self.key_prefix()
-        )
-
-    def _normalize_timeout(self, timeout):
-        def _normalize_timeout(self, timeout):
-            if timeout is None:
-                timeout = self.default_timeout
-            return timeout
-
-        timeout = _normalize_timeout(self, timeout)
-        if timeout == 0:
-            timeout = -1
-        return timeout
-
-    def load_object(self, value):
-        """The reversal of :meth:`dump_object`.  This might be called with
-        None.
-        """
-        if value is None:
-            return None
-        if value.startswith(b"!"):
-            try:
-                return pickle.loads(value[1:])
-            except pickle.PickleError:
-                return None
-        try:
-            return int(value)
-        except ValueError:
-            # before 0.8 we did not have serialization.  Still support that.
-            return value
-
-    def set_many(self, mapping, timeout=None):
-        # Use transaction=False to batch without calling redis MULTI
-        # which is not supported by twemproxy
-
-        result = None
-        for key, value in iteritems_wrapper(mapping):
-            new_key = self._get_prefix() + key
-            result = self.cache_set(new_key, value, timeout)
-
-        return result
-
-    def cache_set(self, name, value, timeout=None):
-        """
-        cache_set
-        :param name:
-        :param value:
-        :param timeout:
-        :return:
-        """
-        dump = self.dump_object(value)
-        cache = self.get_redis_node_obj(name)
-        timeout = self._normalize_timeout(timeout)
-
-        if timeout == -1:
-            result = cache.set(name=name, value=dump)
-        else:
-            result = cache.setex(name=name, time=timeout, value=dump)
-        return result
-
-    def get_many(self, *keys):
-        if self.key_prefix:
-            keys = [self._get_prefix() + key for key in keys]
-
-        result_list = []
-        for key in keys:
-            cache = self.get_redis_node_obj(key)
-            cache_result = cache.get(key)
-            result_list.append(self.load_object(cache_result))
-        return result_list
-
-    def delete_many(self, *keys):
-        if not keys:
-            return
-        if self.key_prefix:
-            keys = [self._get_prefix() + key for key in keys]
-        result = None
-        for key in keys:
-            cache = self.get_redis_node_obj(key)
-            result = cache.delete(key)
-        return result
+        unlink = getattr(self.cache, "unlink", None)
+        if unlink is not None and callable(unlink):
+            return unlink(*args, **kwargs)
+        return self.delete_many(*args, **kwargs)
 
     def cached(
-            self,
-            timeout=None,
-            key_prefix="view/%s",
-            unless=None,
-            forced_update=None,
-            response_filter=None,
-            query_string=False,
-            hash_method=hashlib.md5,
-            cache_none=False,
+        self,
+        timeout=None,
+        key_prefix="view/%s",
+        unless=None,
+        forced_update=None,
+        response_filter=None,
+        query_string=False,
+        hash_method=hashlib.md5,
+        cache_none=False,
     ):
         """Decorator. Use this to cache a function. By default the cache key
         is `view/request.path`. You are able to use this decorator with any
@@ -500,20 +397,19 @@ class DistributedRedisSdk(Redis):
                             args, kwargs, use_request=True
                         )
 
-                    cache = self.get_redis_node_obj(cache_key)
                     if (
-                            callable(forced_update)
-                            and (
+                        callable(forced_update)
+                        and (
                             forced_update(*args, **kwargs)
                             if wants_args(forced_update)
                             else forced_update()
-                    )
-                            is True
+                        )
+                        is True
                     ):
                         rv = None
                         found = False
                     else:
-                        rv = cache.get(cache_key)
+                        rv = self.cache.get(cache_key)
                         found = True
 
                         # If the value returned by cache.get() is None, it
@@ -529,7 +425,7 @@ class DistributedRedisSdk(Redis):
                             if not cache_none:
                                 found = False
                             else:
-                                found = cache.has(cache_key)
+                                found = self.cache.has(cache_key)
                 except Exception:
                     if self.app.debug:
                         raise
@@ -541,7 +437,11 @@ class DistributedRedisSdk(Redis):
 
                     if response_filter is None or response_filter(rv):
                         try:
-                            self.cache_set(cache_key, rv, decorated_function.cache_timeout)
+                            self.cache.set(
+                                cache_key,
+                                rv,
+                                timeout=decorated_function.cache_timeout,
+                            )
                         except Exception:
                             if self.app.debug:
                                 raise
@@ -614,14 +514,14 @@ class DistributedRedisSdk(Redis):
         return base64.b64encode(uuid.uuid4().bytes)[:6].decode("utf-8")
 
     def _memoize_version(
-            self,
-            f,
-            args=None,
-            kwargs=None,
-            reset=False,
-            delete=False,
-            timeout=None,
-            forced_update=False,
+        self,
+        f,
+        args=None,
+        kwargs=None,
+        reset=False,
+        delete=False,
+        timeout=None,
+        forced_update=False,
     ):
         """Updates the hash version associated with a memoized function or
         method.
@@ -637,22 +537,20 @@ class DistributedRedisSdk(Redis):
         # Only delete the per-instance version key or per-function version
         # key but not both.
         if delete:
-            key = fetch_keys[-1]
-            cache = self.get_redis_node_obj(key)
-            cache.delete(key)
+            self.cache.delete_many(fetch_keys[-1])
             return fname, None
 
-        version_data_list = list(self.get_many(*fetch_keys))
+        version_data_list = list(self.cache.get_many(*fetch_keys))
         dirty = False
 
         if (
-                callable(forced_update)
-                and (
+            callable(forced_update)
+            and (
                 forced_update(*(args or ()), **(kwargs or {}))
                 if wants_args(forced_update)
                 else forced_update()
-        )
-                is True
+            )
+            is True
         ):
             # Mark key as dirty to update its TTL
             dirty = True
@@ -673,18 +571,18 @@ class DistributedRedisSdk(Redis):
             dirty = True
 
         if dirty:
-            self.set_many(
+            self.cache.set_many(
                 dict(zip(fetch_keys, version_data_list)), timeout=timeout
             )
 
         return fname, "".join(version_data_list)
 
     def _memoize_make_cache_key(
-            self,
-            make_name=None,
-            timeout=None,
-            forced_update=False,
-            hash_method=hashlib.md5,
+        self,
+        make_name=None,
+        timeout=None,
+        forced_update=False,
+        hash_method=hashlib.md5,
     ):
         """Function used to create the cache_key for memoized functions."""
 
@@ -774,7 +672,7 @@ class DistributedRedisSdk(Redis):
 
             new_args.append(arg)
 
-        new_args.extend(args[len(arg_names):])
+        new_args.extend(args[len(arg_names) :])
         return (
             tuple(new_args),
             OrderedDict(
@@ -805,14 +703,14 @@ class DistributedRedisSdk(Redis):
         return bypass_cache
 
     def memoize(
-            self,
-            timeout=None,
-            make_name=None,
-            unless=None,
-            forced_update=None,
-            response_filter=None,
-            hash_method=hashlib.md5,
-            cache_none=False,
+        self,
+        timeout=None,
+        make_name=None,
+        unless=None,
+        forced_update=None,
+        response_filter=None,
+        hash_method=hashlib.md5,
+        cache_none=False,
     ):
         """Use this to cache the result of a function, taking its arguments
         into account in the cache key.
@@ -896,22 +794,20 @@ class DistributedRedisSdk(Redis):
                     cache_key = decorated_function.make_cache_key(
                         f, *args, **kwargs
                     )
-                    cache_key = self._get_prefix() + cache_key
-                    # 根据缓存key获取redis节点对象
-                    cache = self.get_redis_node_obj(cache_key)
+
                     if (
-                            callable(forced_update)
-                            and (
+                        callable(forced_update)
+                        and (
                             forced_update(*args, **kwargs)
                             if wants_args(forced_update)
                             else forced_update()
-                    )
-                            is True
+                        )
+                        is True
                     ):
                         rv = None
                         found = False
                     else:
-                        rv = cache.get(cache_key)
+                        rv = self.cache.get(cache_key)
                         found = True
 
                         # If the value returned by cache.get() is None, it
@@ -927,7 +823,7 @@ class DistributedRedisSdk(Redis):
                             if not cache_none:
                                 found = False
                             else:
-                                found = cache.has(cache_key)
+                                found = self.cache.has(cache_key)
                 except Exception:
                     if self.app.debug:
                         raise
@@ -939,7 +835,11 @@ class DistributedRedisSdk(Redis):
 
                     if response_filter is None or response_filter(rv):
                         try:
-                            result = self.cache_set(cache_key, rv, decorated_function.cache_timeout)
+                            self.cache.set(
+                                cache_key,
+                                rv,
+                                timeout=decorated_function.cache_timeout,
+                            )
                         except Exception:
                             if self.app.debug:
                                 raise
@@ -1078,8 +978,7 @@ class DistributedRedisSdk(Redis):
             self._memoize_version(f, reset=True)
         else:
             cache_key = f.make_cache_key(f.uncached, *args, **kwargs)
-            cache = self.get_redis_node_obj(cache_key)
-            cache.delete(cache_key)
+            self.cache.delete(cache_key)
 
     def delete_memoized_verhash(self, f, *args):
         """Delete the version hash associated with the function.
