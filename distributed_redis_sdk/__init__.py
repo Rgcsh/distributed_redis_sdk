@@ -105,22 +105,25 @@ class DistributedRedisSdk(Redis):
         :return:
         """
         # 某些命令 不能分配到节点,此处进行校验
-        # 判断参数长度不能小于2个
+        # 判断参数长度不能小于2个(如果小于,说明肯定没有key)
         if len(args) < 2:
             raise Exception('此分布式redis对象不支持使用此方法,因为没有key,无法定位到具体redis节点,'
                             '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
 
+        # 通过 command_name 找到对应的函数名,然后找到对应参数
         command_name = args[0]
-        # 某些命令不能找到对应节点
-        if command_name not in ['config_set']:
-            raise Exception('此分布式redis对象不支持使用此方法,无法定位到具体redis节点,'
+        command_func = getattr(Redis, get_func_name(command_name))
+        func_params = command_func.__code__.co_varnames
+        # 第二个参数 进行校验,command_name不在指定的list中
+        allow_command_list = ['touch']
+        if func_params[1] not in ['key', 'keys', 'name', 'names', 'src'] and command_name not in allow_command_list:
+            raise Exception('此分布式redis对象不支持使用此方法,因为没有key或name,无法定位到具体redis节点,'
                             '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
 
-        # 通过 command_name 找到对应的函数名,然后找到对应参数
-        func_params = eval(f'Redis.{get_func_name(command_name)}').__code__.co_varnames
-        # 第二个参数 进行校验,command_name不在指定的list中
-        if func_params[1] not in ['key', 'keys', 'name', 'names', 'src'] and command_name not in ['touch', ]:
-            raise Exception('此分布式redis对象不支持使用此方法,因为没有key或name,无法定位到具体redis节点,'
+        # 某些命令不能找到对应节点
+        not_allowed_command_list = ['config_set']
+        if command_name in not_allowed_command_list:
+            raise Exception('此分布式redis对象不支持使用此方法,无法定位到具体redis节点,'
                             '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
 
         # 获取 执行的redis命令
