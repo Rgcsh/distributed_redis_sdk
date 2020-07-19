@@ -206,15 +206,26 @@ class DistributedRedisSdk(Redis):
             result = cache.setex(name=name, time=timeout, value=dump)
         return result
 
+    def cache_get(self, key, cache_obj=None):
+        """
+        获取缓存数据,并还原
+        :param key:
+        :param cache_obj:缓存对象
+        :return:
+        """
+        if not cache_obj:
+            cache_obj = self.get_redis_node_obj(key)
+
+        return load_object(cache_obj.get(key))
+
     def get_many(self, *keys):
         if self.key_prefix:
             keys = [self._get_prefix() + key for key in keys]
 
         result_list = []
         for key in keys:
-            cache = self.get_redis_node_obj(key)
-            cache_result = cache.get(key)
-            result_list.append(load_object(cache_result))
+            cache_result = self.cache_get(key)
+            result_list.append(cache_result)
         return result_list
 
     def delete_many(self, *keys):
@@ -341,7 +352,7 @@ class DistributedRedisSdk(Redis):
                         cache_key = _make_cache_key(
                             args, kwargs, use_request=True
                         )
-
+                    cache_key = self._get_prefix() + cache_key
                     cache = self.get_redis_node_obj(cache_key)
                     if (
                             callable(forced_update)
@@ -355,7 +366,7 @@ class DistributedRedisSdk(Redis):
                         rv = None
                         found = False
                     else:
-                        rv = cache.get(cache_key)
+                        rv = self.cache_get(cache_key, cache)
                         found = True
 
                         # If the value returned by cache.get() is None, it
@@ -747,7 +758,7 @@ class DistributedRedisSdk(Redis):
                         rv = None
                         found = False
                     else:
-                        rv = cache.get(cache_key)
+                        rv = self.cache_get(cache_key, cache)
                         found = True
 
                         # If the value returned by cache.get() is None, it
