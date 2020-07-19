@@ -9,143 +9,19 @@ import base64
 import functools
 import hashlib
 import inspect
-import logging
-import string
-import uuid
 from collections import OrderedDict
 
 import redis
-from flask import current_app, request, url_for
+from flask import request, url_for
 from redis import Redis, ConnectionPool
 
-from .backends.base import iteritems_wrapper
-from .backends.rediscache import RedisCache
 from .exception import InvalidConfigException
 from .log_obj import log
+from .utils import iteritems_wrapper, memoize_make_version_hash, memvname, function_namespace, get_arg_names, get_id, \
+    wants_args, get_arg_default, dump_object, load_object, normalize_timeout
 from .utils.consistency_hash import ConsistencyHash
 from .utils.constant import *
 from .utils.redis_action import get_redis_obj, get_hash_ring_map, get_func_name
-
-try:
-    import cPickle as pickle
-except ImportError:  # pragma: no cover
-    import pickle
-__version__ = "1.8.0"
-
-logger = logging.getLogger(__name__)
-
-TEMPLATE_FRAGMENT_KEY_TEMPLATE = "_template_fragment_cache_%s%s"
-SUPPORTED_HASH_FUNCTIONS = [
-    hashlib.sha1,
-    hashlib.sha224,
-    hashlib.sha256,
-    hashlib.sha384,
-    hashlib.sha512,
-    hashlib.md5,
-]
-
-# Used to remove control characters and whitespace from cache keys.
-valid_chars = set(string.ascii_letters + string.digits + "_.")
-delchars = "".join(c for c in map(chr, range(256)) if c not in valid_chars)
-null_control = (dict((k, None) for k in delchars),)
-
-
-def wants_args(f):
-    """Check if the function wants any arguments
-    """
-
-    argspec = inspect.getfullargspec(f)
-
-    return bool(argspec.args or argspec.varargs or argspec.varkw)
-
-
-def get_arg_names(f):
-    """Return arguments of function
-
-    :param f:
-    :return: String list of arguments
-    """
-    sig = inspect.signature(f)
-    return [
-        parameter.name
-        for parameter in sig.parameters.values()
-        if parameter.kind == parameter.POSITIONAL_OR_KEYWORD
-    ]
-
-
-def get_arg_default(f, position):
-    sig = inspect.signature(f)
-    arg = list(sig.parameters.values())[position]
-    arg_def = arg.default
-    return arg_def if arg_def != inspect.Parameter.empty else None
-
-
-def get_id(obj):
-    return getattr(obj, "__caching_id__", repr)(obj)
-
-
-def function_namespace(f, args=None):
-    """Attempts to returns unique namespace for function"""
-    m_args = get_arg_names(f)
-
-    instance_token = None
-
-    instance_self = getattr(f, "__self__", None)
-
-    if instance_self and not inspect.isclass(instance_self):
-        instance_token = get_id(f.__self__)
-    elif m_args and m_args[0] == "self" and args:
-        instance_token = get_id(args[0])
-
-    module = f.__module__
-
-    if m_args and m_args[0] == "cls" and not inspect.isclass(args[0]):
-        raise ValueError(
-            "When using `delete_memoized` on a "
-            "`@classmethod` you must provide the "
-            "class as the first argument"
-        )
-
-    if hasattr(f, "__qualname__"):
-        name = f.__qualname__
-    else:
-        klass = getattr(f, "__self__", None)
-
-        if klass and not inspect.isclass(klass):
-            klass = klass.__class__
-
-        if not klass:
-            klass = getattr(f, "im_class", None)
-
-        if not klass:
-            if m_args and args:
-                if m_args[0] == "self":
-                    klass = args[0].__class__
-                elif m_args[0] == "cls":
-                    klass = args[0]
-
-        if klass:
-            name = klass.__name__ + "." + f.__name__
-        else:
-            name = f.__name__
-
-    ns = ".".join((module, name))
-    ns = ns.translate(*null_control)
-
-    if instance_token:
-        ins = ".".join((module, name, instance_token))
-        ins = ins.translate(*null_control)
-    else:
-        ins = None
-
-    return ns, ins
-
-
-def make_template_fragment_key(fragment_name, vary_on=[]):
-    """Make a cache key for a specific fragment name."""
-    if vary_on:
-        fragment_name = "%s_" % fragment_name
-    return TEMPLATE_FRAGMENT_KEY_TEMPLATE % (fragment_name, "_".join(vary_on))
 
 
 class DistributedRedisSdk(Redis):
@@ -165,6 +41,7 @@ class DistributedRedisSdk(Redis):
         self.k_redis_password = k_redis_password
         self.k_redis_db = k_redis_db
         self.key_prefix = k_prefix or ""
+        self.default_timeout = k_default_timeout or 300
 
         self.manager_redis_obj = None
         # 加载时即配置
@@ -193,6 +70,7 @@ class DistributedRedisSdk(Redis):
         self.k_redis_password = config.get(k_redis_password)
         self.k_redis_db = config.get(k_redis_db)
         self.key_prefix = config.get(k_prefix)
+        self.default_timeout = config.get(k_default_timeout)  # 缓存默认过期时间
 
         self.manager_redis_obj = Redis(self.k_redis_host, self.k_redis_port, self.k_redis_db, self.k_redis_password)
 
@@ -203,9 +81,15 @@ class DistributedRedisSdk(Redis):
         self.app = app
 
         # 扩展原始Flask功能
-        self.extend_flask_middleware(app)
+        self.extend_flask_middleware()
 
         app.extensions["distributed_redis_sdk"] = self
+
+    def extend_flask_middleware(self):
+        """ 扩展Flask中间件
+        """
+        # 在init_app时，为flask app注册权限中间件
+        log.info("成功注册 分布式缓存 中间件")
 
     def get_redis_node_obj(self, key):
         """
@@ -216,12 +100,6 @@ class DistributedRedisSdk(Redis):
         hash_map = get_hash_ring_map(self.manager_redis_obj)
         node_url = ConsistencyHash(hash_map).get_node(key)
         return redis.from_url(node_url)
-
-    def extend_flask_middleware(self, app):
-        """ 扩展Flask中间件
-        """
-        # 在init_app时，为flask app注册权限中间件
-        log.info("成功注册 分布式缓存 中间件")
 
     def execute_command(self, *args, **options):
         """
@@ -286,54 +164,18 @@ class DistributedRedisSdk(Redis):
             if not self.connection:
                 pool.release(conn)
 
-    @property
-    def cache(self):
-        app = current_app or self.app
-        return app.extensions["cache"][self]
-
-    def dump_object(self, value):
-        """Dumps an object into a string for redis.  By default it serializes
-        integers as regular string and pickle dumps everything else.
-        """
-        t = type(value)
-        if t == int:
-            return str(value).encode("ascii")
-        return b"!" + pickle.dumps(value)
+    # -------通过装饰器 缓存函数 部分 start---------
 
     def _get_prefix(self):
+        """
+        获取缓存前缀
+        :return:
+        """
         return (
             self.key_prefix
             if isinstance(self.key_prefix, str)
             else self.key_prefix()
         )
-
-    def _normalize_timeout(self, timeout):
-        def _normalize_timeout(self, timeout):
-            if timeout is None:
-                timeout = self.default_timeout
-            return timeout
-
-        timeout = _normalize_timeout(self, timeout)
-        if timeout == 0:
-            timeout = -1
-        return timeout
-
-    def load_object(self, value):
-        """The reversal of :meth:`dump_object`.  This might be called with
-        None.
-        """
-        if value is None:
-            return None
-        if value.startswith(b"!"):
-            try:
-                return pickle.loads(value[1:])
-            except pickle.PickleError:
-                return None
-        try:
-            return int(value)
-        except ValueError:
-            # before 0.8 we did not have serialization.  Still support that.
-            return value
 
     def set_many(self, mapping, timeout=None):
         # Use transaction=False to batch without calling redis MULTI
@@ -354,9 +196,9 @@ class DistributedRedisSdk(Redis):
         :param timeout:
         :return:
         """
-        dump = self.dump_object(value)
+        dump = dump_object(value)
         cache = self.get_redis_node_obj(name)
-        timeout = self._normalize_timeout(timeout)
+        timeout = normalize_timeout(timeout, self.default_timeout)
 
         if timeout == -1:
             result = cache.set(name=name, value=dump)
@@ -372,7 +214,7 @@ class DistributedRedisSdk(Redis):
         for key in keys:
             cache = self.get_redis_node_obj(key)
             cache_result = cache.get(key)
-            result_list.append(self.load_object(cache_result))
+            result_list.append(load_object(cache_result))
         return result_list
 
     def delete_many(self, *keys):
@@ -533,7 +375,7 @@ class DistributedRedisSdk(Redis):
                 except Exception:
                     if self.app.debug:
                         raise
-                    logger.exception("Exception possibly due to cache backend.")
+                    log.exception("Exception possibly due to cache backend.")
                     return f(*args, **kwargs)
 
                 if not found:
@@ -545,7 +387,7 @@ class DistributedRedisSdk(Redis):
                         except Exception:
                             if self.app.debug:
                                 raise
-                            logger.exception(
+                            log.exception(
                                 "Exception possibly due to cache backend."
                             )
                 return rv
@@ -607,12 +449,6 @@ class DistributedRedisSdk(Redis):
 
         return decorator
 
-    def _memvname(self, funcname):
-        return funcname + "_memver"
-
-    def _memoize_make_version_hash(self):
-        return base64.b64encode(uuid.uuid4().bytes)[:6].decode("utf-8")
-
     def _memoize_version(
             self,
             f,
@@ -627,11 +463,11 @@ class DistributedRedisSdk(Redis):
         method.
         """
         fname, instance_fname = function_namespace(f, args=args)
-        version_key = self._memvname(fname)
+        version_key = memvname(fname)
         fetch_keys = [version_key]
 
         if instance_fname:
-            instance_version_key = self._memvname(instance_fname)
+            instance_version_key = memvname(instance_fname)
             fetch_keys.append(instance_version_key)
 
         # Only delete the per-instance version key or per-function version
@@ -658,18 +494,18 @@ class DistributedRedisSdk(Redis):
             dirty = True
 
         if version_data_list[0] is None:
-            version_data_list[0] = self._memoize_make_version_hash()
+            version_data_list[0] = memoize_make_version_hash()
             dirty = True
 
         if instance_fname and version_data_list[1] is None:
-            version_data_list[1] = self._memoize_make_version_hash()
+            version_data_list[1] = memoize_make_version_hash()
             dirty = True
 
         # Only reset the per-instance version or the per-function version
         # but not both.
         if reset:
             fetch_keys = fetch_keys[-1:]
-            version_data_list = [self._memoize_make_version_hash()]
+            version_data_list = [memoize_make_version_hash()]
             dirty = True
 
         if dirty:
@@ -931,7 +767,7 @@ class DistributedRedisSdk(Redis):
                 except Exception:
                     if self.app.debug:
                         raise
-                    logger.exception("Exception possibly due to cache backend.")
+                    log.exception("Exception possibly due to cache backend.")
                     return f(*args, **kwargs)
 
                 if not found:
@@ -943,7 +779,7 @@ class DistributedRedisSdk(Redis):
                         except Exception:
                             if self.app.debug:
                                 raise
-                            logger.exception(
+                            log.exception(
                                 "Exception possibly due to cache backend."
                             )
                 return rv
