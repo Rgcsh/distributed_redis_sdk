@@ -28,6 +28,11 @@ class DistributedRedisSdk(Redis):
     """分布式redis客户端类"""
 
     def __init__(self, app=None, config=None):
+        """
+        对象初始化
+        :param app:
+        :param config:
+        """
         super(DistributedRedisSdk, self).__init__()
         # Flask的config必须是dict或者None
         if not (config is None or isinstance(config, dict)):
@@ -40,8 +45,8 @@ class DistributedRedisSdk(Redis):
         self.k_redis_port = k_redis_port
         self.k_redis_password = k_redis_password
         self.k_redis_db = k_redis_db
-        self.key_prefix = k_prefix or ""
-        self.default_timeout = k_default_timeout or 300
+        self.key_prefix = k_prefix
+        self.default_timeout = k_default_timeout
 
         self.manager_redis_obj = None
         # 加载时即配置
@@ -70,7 +75,9 @@ class DistributedRedisSdk(Redis):
         self.k_redis_password = config.get(k_redis_password)
         self.k_redis_db = config.get(k_redis_db)
         self.key_prefix = config.get(k_prefix)
-        self.default_timeout = config.get(k_default_timeout)  # 缓存默认过期时间
+        if not self.key_prefix:
+            raise Exception('分布式缓存前缀配置DIS_CACHE_PREFIX必须设置,并且不同项目不能重复')
+        self.default_timeout = config.get(k_default_timeout) or 300  # 缓存默认过期时间
 
         self.manager_redis_obj = Redis(self.k_redis_host, self.k_redis_port, self.k_redis_db, self.k_redis_password)
 
@@ -94,12 +101,31 @@ class DistributedRedisSdk(Redis):
     def get_redis_node_obj(self, key):
         """
         通过key生成hashkey,获取对应 节点的redis obj
+        注意:此处获取的redis对象是直接从redis包导入的,可以进行任何操作,不会对 execute_command进行修改
         :param key:
         :return:
         """
         hash_map = get_hash_ring_map(self.manager_redis_obj)
         node_url = ConsistencyHash(hash_map).get_node(key)
+        return self.redis_from_url(node_url)
+
+    @classmethod
+    def redis_from_url(cls, node_url):
+        """
+        通过url获取redis对象
+        注意:此处获取的redis对象是直接从redis包导入的,可以进行任何操作,不会对 execute_command进行修改
+        :param node_url:
+        :return:
+        """
         return redis.from_url(node_url)
+
+    def get_all_node_url(self):
+        """
+        获取所有node redis的真实url
+        :return:
+        """
+        hash_map = get_hash_ring_map(self.manager_redis_obj)
+        return set(hash_map.values())
 
     def execute_command(self, *args, **options):
         """
@@ -165,7 +191,6 @@ class DistributedRedisSdk(Redis):
                 pool.release(conn)
 
     # -------通过装饰器 缓存函数 部分 start---------
-
     def _get_prefix(self):
         """
         获取缓存前缀
@@ -190,11 +215,18 @@ class DistributedRedisSdk(Redis):
 
     def cache_set(self, name, value, timeout=None):
         """
-        cache_set
+        设置缓存,直接存储value的二进制数据(不会转为bytes),timeout值不填写,则过期时间为 设置的过期时间或者300s
         :param name:
         :param value:
-        :param timeout:
+        :param timeout:值为<=0时,永久缓存;值为None时,缓存设置的过期时间或300s;值为其他>0时,则缓存给定的时间
         :return:
+
+        Usage:
+        >>> self.cache_set(1,'test') # 缓存 设置的过期时间或者300s
+        >>> self.cache_set(1,'test',-1) # 缓存永久
+        >>> self.cache_set(1,'test',0) # 缓存永久
+        >>> self.cache_set(1,'test',-2) # 缓存永久
+        >>> self.cache_set(1,'test',10) # 缓存10s
         """
         dump = dump_object(value)
         cache = self.get_redis_node_obj(name)
@@ -208,9 +240,9 @@ class DistributedRedisSdk(Redis):
 
     def cache_get(self, key, cache_obj=None):
         """
-        获取缓存数据,并还原
+        获取缓存的二进制数据,并还原为原来的对象
         :param key:
-        :param cache_obj:缓存对象
+        :param cache_obj:缓存对象,不传此值时,则 通过key 生成缓存对象
         :return:
         """
         if not cache_obj:
@@ -218,7 +250,23 @@ class DistributedRedisSdk(Redis):
 
         return load_object(cache_obj.get(key))
 
+    def has(self, key, cache_obj):
+        """
+        判断是否存在此key
+        :param key: 已经添加过 key_prefix前缀的 key
+        :param cache_obj:
+        :return:
+        """
+        if not cache_obj:
+            cache_obj = self.get_redis_node_obj(key)
+        return cache_obj.exists(key)
+
     def get_many(self, *keys):
+        """
+        获取多条数据
+        :param keys:
+        :return:
+        """
         if self.key_prefix:
             keys = [self._get_prefix() + key for key in keys]
 
@@ -229,6 +277,11 @@ class DistributedRedisSdk(Redis):
         return result_list
 
     def delete_many(self, *keys):
+        """
+        删除多条数据
+        :param keys:
+        :return:
+        """
         if not keys:
             return
         if self.key_prefix:
@@ -238,6 +291,21 @@ class DistributedRedisSdk(Redis):
             cache = self.get_redis_node_obj(key)
             result = cache.delete(key)
         return result
+
+    def clear(self):
+        """
+        清空数据
+        :return:
+        """
+        status = False
+        node_url_list = self.get_all_node_url()
+        for node_url in node_url_list:
+            cache = self.redis_from_url(node_url)
+            keys = cache.keys(self._get_prefix() + "*")
+            print(keys, node_url)
+            if keys:
+                status = cache.delete(*keys)
+        return status
 
     def cached(
             self,
@@ -254,7 +322,7 @@ class DistributedRedisSdk(Redis):
         is `view/request.path`. You are able to use this decorator with any
         function by changing the `key_prefix`. If the token `%s` is located
         within the `key_prefix` then it will replace that with `request.path`
-
+        视图级别的缓存,不能用在 内部函数中,因为缓存名 根据 请求路径生成的
         Example::
 
             # An example view function
@@ -382,7 +450,7 @@ class DistributedRedisSdk(Redis):
                             if not cache_none:
                                 found = False
                             else:
-                                found = cache.has(cache_key)
+                                found = self.has(cache_key, cache)
                 except Exception:
                     if self.app.debug:
                         raise
@@ -663,7 +731,7 @@ class DistributedRedisSdk(Redis):
     ):
         """Use this to cache the result of a function, taking its arguments
         into account in the cache key.
-
+        函数级别的缓存
         Information on
         `Memoization <http://en.wikipedia.org/wiki/Memoization>`_.
 
@@ -774,7 +842,7 @@ class DistributedRedisSdk(Redis):
                             if not cache_none:
                                 found = False
                             else:
-                                found = cache.has(cache_key)
+                                found = self.has(cache_key, cache)
                 except Exception:
                     if self.app.debug:
                         raise
@@ -925,6 +993,7 @@ class DistributedRedisSdk(Redis):
             self._memoize_version(f, reset=True)
         else:
             cache_key = f.make_cache_key(f.uncached, *args, **kwargs)
+            cache_key = self.key_prefix + cache_key
             cache = self.get_redis_node_obj(cache_key)
             cache.delete(cache_key)
 

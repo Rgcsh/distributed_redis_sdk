@@ -25,7 +25,7 @@
 * DIS_MANAGER_REDIS_PORT:manager redis 端口
 * DIS_MANAGER_REDIS_PASSWORD:manager redis 密码,可以不设置
 * DIS_MANAGER_REDIS_DB:manager redis 数据库
-* DIS_CACHE_PREFIX:缓存前缀,用来区分项目,可以不设置
+* DIS_CACHE_PREFIX:缓存前缀,用来区分项目;注意只对 memoize,cached 2个函数起作用
 * DIS_CACHE_DEFAULT_TIMEOUT:缓存默认过期时间,可以不设置,默认300s
 
 # 运行步骤
@@ -40,7 +40,7 @@
         DIS_CACHE_PREFIX = 'BEI:'
     ```
  
-# 用法示例
+# 用法示例(详细请看examples和源码)
 * 各种redis数据类型进行操作,以 string类型的get,set为例
     ```python3
     import DistributedRedisSdk
@@ -67,7 +67,19 @@
 
     # 永久缓存
     @redis.memoize(-1)
-    def test(key, val):
+    def test1(key, val):
+        """
+        测试缓存
+        :param key:
+        :param val:
+        :return:
+        """
+        print('test func !!!!')
+        return key + val + str(random.randint(1, 100))
+    
+    # 缓存设置的默认时长
+    @redis.memoize()
+    def test2(key, val):
         """
         测试缓存
         :param key:
@@ -78,7 +90,7 @@
         return key + val + str(random.randint(1, 100))
     
     # 在类中的方法设置缓存(注意 只能是静态方法,其他方法因为 有 self,cls等 导致即使参数相同,但生成的key不同导致缓存失效)
-    class TEstController(BaseController):
+    class TestController():
         @staticmethod
         @distributed_redis.memoize(5)
         def test(key, val):
@@ -90,7 +102,7 @@
             """
             print('test func !!!!')
             return key + val + str(random.randint(1, 100))
-    
+
     ```
 
 # 注意点

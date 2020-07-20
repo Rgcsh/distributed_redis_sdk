@@ -41,7 +41,7 @@ def normalize_timeout(timeout, default_timeout):
     """
     if timeout is None:
         timeout = default_timeout
-    if timeout == 0:
+    if timeout <= 0:
         timeout = -1
     return timeout
 

@@ -19,7 +19,7 @@ k_redis_port = 'DIS_MANAGER_REDIS_PORT'
 k_redis_password = 'DIS_MANAGER_REDIS_PASSWORD'
 # manager redis 数据库
 k_redis_db = 'DIS_MANAGER_REDIS_DB'
-# 缓存前缀,用来区分项目,可以不设置
+# 缓存前缀,用来区分项目;注意只对 memoize,cached 2个函数起作用
 k_prefix = 'DIS_CACHE_PREFIX'
 # 缓存默认过期时间,可以不设置,默认300s
 k_default_timeout = 'DIS_CACHE_DEFAULT_TIMEOUT'
