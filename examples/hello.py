@@ -78,8 +78,7 @@ def clear_cache():
 def html(foo=None):
     if foo is not None:
         redis.set("set_foo", foo)
-        result = redis.cache_set('cache_set_foo', foo)
-        print(result)
+        redis.cache_set('cache_set_foo', foo)
     return render_template_string(
         """
         <html>
