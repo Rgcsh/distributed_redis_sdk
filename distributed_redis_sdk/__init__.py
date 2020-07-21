@@ -18,7 +18,7 @@ from redis import Redis, ConnectionPool
 from .exception import InvalidConfigException
 from .log_obj import log
 from .utils import iteritems_wrapper, memoize_make_version_hash, memvname, function_namespace, get_arg_names, get_id, \
-    wants_args, get_arg_default, dump_object, load_object, normalize_timeout
+    wants_args, get_arg_default, dump_object, load_object, normalize_timeout, try_times, try_times_default
 from .utils.consistency_hash import ConsistencyHash
 from .utils.constant import *
 from .utils.redis_action import get_redis_obj, get_hash_ring_map, get_func_name
@@ -127,6 +127,7 @@ class DistributedRedisSdk(Redis):
         hash_map = get_hash_ring_map(self.manager_redis_obj)
         return set(hash_map.values())
 
+    @try_times_default
     def execute_command(self, *args, **options):
         """
         Execute a command and return a parsed response
@@ -174,6 +175,7 @@ class DistributedRedisSdk(Redis):
         hash_map = get_hash_ring_map(self.manager_redis_obj)
         node_url = ConsistencyHash(hash_map).get_node(key)
         log.info(f'node_url:{node_url},key:{key},command_name:{command_name}')
+
         # 通过节点url获取redis对象的 连接池
         pool = ConnectionPool.from_url(node_url)
         conn = self.connection or pool.get_connection(command_name, **options)
@@ -213,6 +215,7 @@ class DistributedRedisSdk(Redis):
 
         return result
 
+    @try_times_default
     def cache_set(self, name, value, timeout=None):
         """
         设置缓存,直接存储value的二进制数据(不会转为bytes),timeout值不填写,则过期时间为 设置的过期时间或者300s
@@ -238,6 +241,7 @@ class DistributedRedisSdk(Redis):
             result = cache.setex(name=name, time=timeout, value=dump)
         return result
 
+    @try_times_default
     def cache_get(self, key, cache_obj=None):
         """
         获取缓存的二进制数据,并还原为原来的对象
@@ -250,6 +254,7 @@ class DistributedRedisSdk(Redis):
 
         return load_object(cache_obj.get(key))
 
+    @try_times_default
     def has(self, key, cache_obj):
         """
         判断是否存在此key
@@ -276,6 +281,15 @@ class DistributedRedisSdk(Redis):
             result_list.append(cache_result)
         return result_list
 
+    def cache_delete(self, key):
+        """
+        删除数据
+        :param key:
+        :return:
+        """
+        cache = self.get_redis_node_obj(key)
+        return cache.delete(key)
+
     def delete_many(self, *keys):
         """
         删除多条数据
@@ -288,8 +302,7 @@ class DistributedRedisSdk(Redis):
             keys = [self._get_prefix() + key for key in keys]
         result = None
         for key in keys:
-            cache = self.get_redis_node_obj(key)
-            result = cache.delete(key)
+            result = self.cache_delete(key)
         return result
 
     def clear(self):
@@ -302,7 +315,6 @@ class DistributedRedisSdk(Redis):
         for node_url in node_url_list:
             cache = self.redis_from_url(node_url)
             keys = cache.keys(self._get_prefix() + "*")
-            print(keys, node_url)
             if keys:
                 status = cache.delete(*keys)
         return status
@@ -553,8 +565,7 @@ class DistributedRedisSdk(Redis):
         # key but not both.
         if delete:
             key = fetch_keys[-1]
-            cache = self.get_redis_node_obj(key)
-            cache.delete(key)
+            self.cache_delete(key)
             return fname, None
 
         version_data_list = list(self.get_many(*fetch_keys))
@@ -854,7 +865,7 @@ class DistributedRedisSdk(Redis):
 
                     if response_filter is None or response_filter(rv):
                         try:
-                            result = self.cache_set(cache_key, rv, decorated_function.cache_timeout)
+                            self.cache_set(cache_key, rv, decorated_function.cache_timeout)
                         except Exception:
                             if self.app.debug:
                                 raise
@@ -994,8 +1005,7 @@ class DistributedRedisSdk(Redis):
         else:
             cache_key = f.make_cache_key(f.uncached, *args, **kwargs)
             cache_key = self.key_prefix + cache_key
-            cache = self.get_redis_node_obj(cache_key)
-            cache.delete(cache_key)
+            self.cache_delete(cache_key)
 
     def delete_memoized_verhash(self, f, *args):
         """Delete the version hash associated with the function.

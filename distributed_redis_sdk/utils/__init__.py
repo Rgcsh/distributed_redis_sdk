@@ -9,5 +9,7 @@ Usage:
 """
 # 常量
 from .constant import *
+# 装饰器
+from .decorator import *
 # 格式转换
 from .transform import *

@@ -10,7 +10,7 @@ Usage:
 
 from redis import Redis
 
-from . import HASH_RING_MAP, byte2str
+from . import HASH_RING_MAP, byte2str, try_times_default
 
 
 def url_format(*args, **kwargs):
@@ -45,6 +45,7 @@ def url_format(*args, **kwargs):
         return f"redis://{host}:{port}/{db}"
 
 
+@try_times_default
 def get_hash_ring_map(redis_obj):
     """
     获取manager redis中的map,并格式化
@@ -108,8 +109,3 @@ def get_func_name(command_name):
 
     command_name = command_name.replace(' ', '_')
     return command_name.lower()
-
-
-if __name__ == '__main__':
-    x = get_func_name('ACL LOAD')
-    print(x)

@@ -73,6 +73,12 @@ def clear_cache():
     return "OK"
 
 
+@app.route("/test")
+def test():
+    redis.set('a', 1)
+    return "OK"
+
+
 @app.route("/html")
 @app.route("/html/<foo>")
 def html(foo=None):
