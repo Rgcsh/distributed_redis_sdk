@@ -21,7 +21,7 @@ from redis import Redis, ConnectionPool
 from .exception import InvalidConfigException
 from .log_obj import log
 from .utils import iteritems_wrapper, memoize_make_version_hash, memvname, function_namespace, get_arg_names, get_id, \
-    wants_args, get_arg_default, dump_object, load_object, normalize_timeout, try_times, try_times_default
+    wants_args, get_arg_default, dump_object, load_object, normalize_timeout, try_times, try_times_default, byte2str
 from .utils.consistency_hash import ConsistencyHash
 from .utils.constant import *
 from .utils.redis_action import get_redis_obj, get_hash_ring_map, get_func_name
@@ -215,6 +215,8 @@ class DistributedRedisSdk(Redis):
         :param use_prefix: 默认不在key添加 前缀
         :return:
         """
+        if not mapping or not isinstance(mapping, dict):
+            raise Exception('set_many的mapping值必须为dict类型,且不能为空')
 
         result = None
         for key, value in iteritems_wrapper(mapping):
@@ -224,13 +226,39 @@ class DistributedRedisSdk(Redis):
 
         return result
 
+    def get_many(self, keys: list, use_prefix=False):
+        """
+        获取多条数据
+        :param use_prefix:默认不使用添加key的前缀
+        :param keys:
+        :return:
+
+        Usage:
+        >>>self.get_many(['a','b']) # 默认 use_prefix=False
+        >>>self.get_many(['a','b'],True)
+
+        """
+        if not keys or not isinstance(keys, list):
+            raise Exception('get_many的keys值必须为list类型,且不能为空')
+
+        if use_prefix:
+            keys = [self._get_prefix() + key for key in keys]
+
+        result_list = []
+        for key in keys:
+            cache_result = self.cache_get(key)
+            result_list.append(cache_result)
+        return result_list
+
     @try_times_default
-    def cache_set(self, name, value, timeout=None):
+    def cache_set(self, name, value, timeout=None, use_prefix=False):
         """
         设置缓存,直接存储value的二进制数据(不会转为bytes),timeout值不填写,则过期时间为 设置的过期时间或者300s
         :param name:
         :param value:
         :param timeout:值为<=0时,永久缓存;值为None时,缓存设置的过期时间或300s;值为其他>0时,则缓存给定的时间
+        :param use_prefix:是否添加前缀,默认不添加
+
         :return:
 
         Usage:
@@ -241,6 +269,8 @@ class DistributedRedisSdk(Redis):
         >>> self.cache_set(1,'test',10) # 缓存10s
         """
         dump = dump_object(value)
+        if use_prefix:
+            name = self._get_prefix() + name
         cache = self.get_redis_node_obj(name)
         timeout = normalize_timeout(timeout, self.default_timeout)
 
@@ -263,49 +293,36 @@ class DistributedRedisSdk(Redis):
 
         return load_object(cache_obj.get(key))
 
+    def cache_delete(self, key, use_prefix=False):
+        """
+        删除数据
+        :param key:
+        :param use_prefix:是否添加前缀,默认不添加
+        :return:
+        """
+        if use_prefix:
+            key = self._get_prefix() + key
+
+        cache = self.get_redis_node_obj(key)
+        return cache.delete(key)
+
     @try_times_default
-    def has(self, key, cache_obj=None):
+    def has(self, key, cache_obj=None, use_prefix=False):
         """
         判断是否存在此key
         :param key: 已经添加过 key_prefix前缀的 key
         :param cache_obj:
+        :param use_prefix:是否添加前缀,默认不添加
         :return:
         """
+        if use_prefix:
+            key = self._get_prefix() + key
+
         if not cache_obj:
             cache_obj = self.get_redis_node_obj(key)
         return cache_obj.exists(key)
 
-    def get_many(self, use_prefix=False, *keys):
-        """
-        获取多条数据
-        :param use_prefix:默认不使用添加key的前缀
-        :param keys:
-        :return:
-
-        Usage:
-        >>>self.get_many(['a','b']) # 默认 use_prefix=False
-        >>>self.get_many(Ture,['a','b'])
-
-        """
-        if use_prefix:
-            keys = [self._get_prefix() + key for key in keys]
-
-        result_list = []
-        for key in keys:
-            cache_result = self.cache_get(key)
-            result_list.append(cache_result)
-        return result_list
-
-    def cache_delete(self, key):
-        """
-        删除数据
-        :param key:
-        :return:
-        """
-        cache = self.get_redis_node_obj(key)
-        return cache.delete(key)
-
-    def delete_many(self, use_prefix=False, *keys):
+    def delete_many(self, keys: list, use_prefix=False):
         """
         删除多条数据
         :param use_prefix:默认不使用添加key的前缀
@@ -314,7 +331,7 @@ class DistributedRedisSdk(Redis):
 
         Usage:
         >>>self.delete_many(['a','b']) # 默认 use_prefix=False
-        >>>self.delete_many(Ture,['a','b'])
+        >>>self.delete_many(['a','b'],Ture)
 
         """
         if not keys:
@@ -596,7 +613,7 @@ class DistributedRedisSdk(Redis):
             self.cache_delete(key)
             return fname, None
 
-        version_data_list = list(self.get_many(*fetch_keys))
+        version_data_list = list(self.get_many(fetch_keys, True))
         dirty = False
 
         if (
@@ -1027,11 +1044,11 @@ class DistributedRedisSdk(Redis):
             )
 
         if not (args or kwargs):
-            self._memoize_version(f, reset=True)
+            return self._memoize_version(f, reset=True)
         else:
             cache_key = f.make_cache_key(f.uncached, *args, **kwargs)
             cache_key = self.key_prefix + cache_key
-            self.cache_delete(cache_key)
+            return self.cache_delete(cache_key)
 
     def delete_memoized_verhash(self, f, *args):
         """Delete the version hash associated with the function.

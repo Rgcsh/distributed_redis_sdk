@@ -12,9 +12,7 @@ import random
 from datetime import datetime
 
 import pytest
-from flask import Flask
-from flask import jsonify, render_template_string
-from flask import make_response
+from flask import Flask, make_response, request
 
 from distributed_redis_sdk import DistributedRedisSdk
 
@@ -44,88 +42,113 @@ def json_resp(result):
     return resp
 
 
-@app.route("/api/execute/<str:key>/<str:val>")
+@app.route("/api/execute/<string:key>/<string:val>")
 def api_execute(key, val):
     """
     通过 基础命令 测试 execute_command 函数
     :return:
     """
     redis.set(key, val)
-    return redis.get(key)
+    return json_resp(redis.get(key))
 
 
-@app.route("/api/set_many/<dict:mapping>/<int:timeout>/<bool:use_prefix>")
-def api_set_many(mapping, timeout, use_prefix):
+@app.route("/api/set_many")
+def api_set_many():
     """
     测试 set_many 函数
     :return:
     """
-    redis.set_many(mapping, timeout, use_prefix)
+    parmas = request.values
+    mapping = json.loads(parmas.get('mapping'))
+    timeout = parmas.get('timeout')
+    if timeout:
+        timeout = int(timeout)
+    use_prefix = bool(int(parmas.get('use_prefix')))
+
+    result = redis.set_many(mapping, timeout, use_prefix)
+    return json_resp(result)
 
 
-@app.route("/api/cache_set/cache_get/<str:name>/<str:value>/<int:timeout>")
-def api_cache_set(name, value, timeout):
-    """
-    测试 cache_set,cache_get 函数
-    :return:
-    """
-    redis.cache_set(name, value, timeout)
-    return redis.cache_get(name)
-
-
-@app.route("/api/has/<str:key>")
-def api_has(key):
-    """
-    测试 has 函数
-    :return:
-    """
-    return redis.has(key)
-
-
-@app.route("/api/get_many/<list:keys>")
-def api_get_many(keys):
+@app.route("/api/get_many")
+def api_get_many():
     """
     测试 get_many 函数
     :return:
     """
-    return redis.get_many(keys)
+    keys = json.loads(request.values.get('keys'))
+    use_prefix = bool(int(request.values.get('use_prefix')))
+    return json_resp(redis.get_many(keys, use_prefix))
 
 
-@app.route("/api/cache_delete/<str:key>")
+@app.route("/api/cache_set/<string:name>/<string:value>/<int:timeout>")
+def api_cache_set(name, value, timeout):
+    """
+    测试 cache_set 函数
+    :return:
+    """
+    result = redis.cache_set(name, value, timeout)
+    return json_resp(result)
+
+
+@app.route("/api/cache_get/<string:name>")
+def api_cache_get(name):
+    """
+    测试 cache_get 函数
+    :return:
+    """
+    result = redis.cache_get(name)
+    return json_resp(result)
+
+
+@app.route("/api/cache_delete/<string:key>")
 def api_cache_delete(key):
     """
     测试 cache_delete 函数
     :return:
     """
-    return redis.cache_delete(key)
+    return json_resp(redis.cache_delete(key))
 
 
-@app.route("/api/delete_many/<bool:use_prefix>/<list:keys>")
-def api_delete_many(use_prefix, keys):
+@app.route("/api/has/<string:key>")
+def api_has(key):
+    """
+    测试 has 函数
+    :return:
+    """
+    return json_resp(redis.has(key))
+
+
+@app.route("/api/delete_many")
+def api_delete_many():
     """
     测试 delete_many 函数
     :return:
     """
-    return redis.delete_many(use_prefix, keys)
+    parmas = request.values
+    use_prefix = bool(int(parmas.get('use_prefix')))
+    keys = json.loads(parmas.get('keys'))
+
+    return json_resp(redis.delete_many(keys, use_prefix))
 
 
-@app.route("/api/clear/<bool:use_prefix>")
+@app.route("/api/clear/<int:use_prefix>")
 def api_clear(use_prefix):
     """
     测试 clear 函数
     :return:
     """
-    return redis.clear(use_prefix)
+    use_prefix = bool(use_prefix)
+    return json_resp(redis.clear(use_prefix))
 
 
 @app.route("/api/cached")
-@redis.cached(50)
+@redis.cached(1)
 def api_cached():
     """
-    测试 cached 装饰器 缓存50s
+    测试 cached 装饰器 缓存1s
     :return:
     """
-    return str(datetime.now())
+    return json_resp(str(datetime.now()))
 
 
 #: This is an example of a cached function
@@ -144,10 +167,10 @@ def get_binary():
     测试 cached 缓存视图的装饰器 设置 key
     :return:
     """
-    return jsonify({"data": random_binary()})
+    return json_resp({"data": random_binary()})
 
 
-@redis.memoize(60)
+@redis.memoize(1)
 def _add(a, b):
     """
     测试函数缓存 的装饰器
@@ -158,52 +181,26 @@ def _add(a, b):
     return a + b + random.randrange(0, 1000)
 
 
-@app.route("/api/add/<int:a>/<int:b>")
-def add(a, b):
+@app.route("/api/memoize/<int:a>/<int:b>")
+def memoize(a, b):
     """
     测试函数缓存 的装饰器
     :param a:
     :param b:
     :return:
     """
-    return str(_add(a, b))
+    return json_resp(str(_add(a, b)))
 
 
-@app.route("/api/cache/delete")
+@app.route("/api/memoize/delete")
 def delete_cache():
     """
     测试 清空 函数级别缓存
     :return:
     """
     # 调用 /api/add/1/2 api后
-    redis.delete_memoized(_add, 1, 2)
-    return "OK"
-
-
-@app.route("/html")
-@app.route("/html/<foo>")
-def html(foo=None):
-    if foo is not None:
-        redis.set("set_foo", foo)
-        redis.cache_set('cache_set_foo', foo)
-    return render_template_string(
-        """
-        <html>
-            <body>
-                <h1>通过redis的set命令设置缓存,存的bytes类型数据,获取数据通过 redis get命令 获取bytes类型数据: {{set_foo}}</h1>
-                <h1>通过 cache_set命令设置缓存(直接缓存的对象二进制数据,获取数据时通过 cache_get命令 转为原来数据类型): {{cache_set_foo}}</h1>
-            </body>
-        </html>
-        """, set_foo=redis.get("set_foo"), cache_set_foo=redis.cache_get("cache_set_foo")
-    )
-
-
-@app.route("/keymap", methods=['get', 'post'])
-@pre.catch(key_map_params)
-def test_keymap_handler(params):
-    """ 测试key映射校验
-    """
-    return json_resp(params)
+    result = redis.delete_memoized(_add, 1, 2)
+    return json_resp(result)
 
 
 @pytest.fixture
@@ -212,3 +209,7 @@ def client():
     """
     app.config["TESTING"] = True
     return app.test_client()
+
+
+def check_result(resp, data):
+    assert resp.data == data
