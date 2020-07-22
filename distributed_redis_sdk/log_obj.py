@@ -1,9 +1,13 @@
-# !/usr/local/python/bin/python
 # -*- coding: utf-8 -*-
-# (C) Wu Dong, 2019
-# All rights reserved
-# @Author: 'Wu Dong <wudong@eastwu.cn>'
-# @Time: '2019-05-14 15:55'
+"""
+(C) Rgc <2020956572@qq.com>
+All rights reserved
+create time '2020/7/22 14:31'
+
+Usage:
+
+"""
+
 from __future__ import absolute_import
 
 import logging

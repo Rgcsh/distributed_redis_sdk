@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-# (C) Rgc, 2020
-# All rights reserved
-# @Author: 'Rgc <2020956572@qq.com>'
 """
+(C) Rgc <2020956572@qq.com>
+All rights reserved
+create time '2020/7/22 14:31'
+
+Usage:
 提供根据key获取分布式redis节点 对象的功能
 """
+
 import base64
 import functools
 import hashlib
@@ -204,14 +207,20 @@ class DistributedRedisSdk(Redis):
             else self.key_prefix()
         )
 
-    def set_many(self, mapping, timeout=None):
-        # Use transaction=False to batch without calling redis MULTI
-        # which is not supported by twemproxy
+    def set_many(self, mapping: dict, timeout=None, use_prefix=False):
+        """
+        设置多个值
+        :param mapping:
+        :param timeout:
+        :param use_prefix: 默认不在key添加 前缀
+        :return:
+        """
 
         result = None
         for key, value in iteritems_wrapper(mapping):
-            new_key = self._get_prefix() + key
-            result = self.cache_set(new_key, value, timeout)
+            if use_prefix:
+                key = self._get_prefix() + key
+            result = self.cache_set(key, value, timeout)
 
         return result
 
@@ -255,7 +264,7 @@ class DistributedRedisSdk(Redis):
         return load_object(cache_obj.get(key))
 
     @try_times_default
-    def has(self, key, cache_obj):
+    def has(self, key, cache_obj=None):
         """
         判断是否存在此key
         :param key: 已经添加过 key_prefix前缀的 key
@@ -266,13 +275,19 @@ class DistributedRedisSdk(Redis):
             cache_obj = self.get_redis_node_obj(key)
         return cache_obj.exists(key)
 
-    def get_many(self, *keys):
+    def get_many(self, use_prefix=False, *keys):
         """
         获取多条数据
+        :param use_prefix:默认不使用添加key的前缀
         :param keys:
         :return:
+
+        Usage:
+        >>>self.get_many(['a','b']) # 默认 use_prefix=False
+        >>>self.get_many(Ture,['a','b'])
+
         """
-        if self.key_prefix:
+        if use_prefix:
             keys = [self._get_prefix() + key for key in keys]
 
         result_list = []
@@ -290,31 +305,44 @@ class DistributedRedisSdk(Redis):
         cache = self.get_redis_node_obj(key)
         return cache.delete(key)
 
-    def delete_many(self, *keys):
+    def delete_many(self, use_prefix=False, *keys):
         """
         删除多条数据
+        :param use_prefix:默认不使用添加key的前缀
         :param keys:
         :return:
+
+        Usage:
+        >>>self.delete_many(['a','b']) # 默认 use_prefix=False
+        >>>self.delete_many(Ture,['a','b'])
+
         """
         if not keys:
             return
-        if self.key_prefix:
+        if use_prefix:
             keys = [self._get_prefix() + key for key in keys]
         result = None
         for key in keys:
             result = self.cache_delete(key)
         return result
 
-    def clear(self):
+    def clear(self, use_prefix=False):
         """
-        清空数据
+        按照条件 清空 所有节点给定db的 数据
+
+        警告:此方法谨慎使用!!!
+        :param use_prefix:默认删除所有的key,值为True时删除给定前缀的所有数据
         :return:
         """
         status = False
         node_url_list = self.get_all_node_url()
         for node_url in node_url_list:
             cache = self.redis_from_url(node_url)
-            keys = cache.keys(self._get_prefix() + "*")
+            if use_prefix:
+                keys = cache.keys(self._get_prefix() + "*")
+            else:
+                keys = cache.keys("*")
+
             if keys:
                 status = cache.delete(*keys)
         return status
@@ -599,9 +627,7 @@ class DistributedRedisSdk(Redis):
             dirty = True
 
         if dirty:
-            self.set_many(
-                dict(zip(fetch_keys, version_data_list)), timeout=timeout
-            )
+            self.set_many(dict(zip(fetch_keys, version_data_list)), timeout=timeout, use_prefix=True)
 
         return fname, "".join(version_data_list)
 

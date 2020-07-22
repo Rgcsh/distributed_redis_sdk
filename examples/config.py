@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-(C) Guangcai Ren <rgc@bvrft.com>
+(C) Rgc <2020956572@qq.com>
 All rights reserved
 create time '2020/7/20 09:34'
 

@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
-# (C) Rgc, 2020
-# All rights reserved
-# @Author: 'Rgc <2020956572@qq.com>'
+"""
+(C) Rgc <2020956572@qq.com>
+All rights reserved
+create time '2020/7/22 14:31'
+
+Usage:
+
+"""
+
 __author__ = 'Rgc'
 __title__ = 'distributed_redis_sdk'
 __description__ = '使用一致性hash实现python flask版的分布式redis 客户端sdk包'

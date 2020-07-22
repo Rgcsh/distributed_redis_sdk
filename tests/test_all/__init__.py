@@ -8,6 +8,3 @@ Usage:
 
 """
 
-class InvalidConfigException(Exception):
-    """配置错误"""
-    pass

@@ -2,23 +2,46 @@
 """
 (C) Rgc <2020956572@qq.com>
 All rights reserved
-create time '2020/7/20 09:27'
+create time '2020/7/22 14:31'
 
 Usage:
 
 """
+import json
 import random
 from datetime import datetime
 
-from flask import Flask, jsonify, render_template_string
+import pytest
+from flask import Flask
+from flask import jsonify, render_template_string
+from flask import make_response
 
 from distributed_redis_sdk import DistributedRedisSdk
-from examples.config import Config
 
 app = Flask(__name__)
 
+
+class Config(object):
+    """
+    配置类
+    """
+    DEBUG = True
+    DIS_MANAGER_REDIS_HOST = '127.0.0.1'
+    DIS_MANAGER_REDIS_PORT = '6379'
+    DIS_MANAGER_REDIS_PASSWORD = ''
+    DIS_MANAGER_REDIS_DB = '13'
+    DIS_CACHE_PREFIX = 'BEI:'
+
+
 app.config.from_object(Config)
 redis = DistributedRedisSdk(app)
+
+
+def json_resp(result):
+    result = json.dumps(result)
+    resp = make_response(result)
+    resp.headers['Content-Type'] = 'application/json'
+    return resp
 
 
 @app.route("/api/execute/<str:key>/<str:val>")
@@ -175,5 +198,17 @@ def html(foo=None):
     )
 
 
-if __name__ == "__main__":
-    app.run()
+@app.route("/keymap", methods=['get', 'post'])
+@pre.catch(key_map_params)
+def test_keymap_handler(params):
+    """ 测试key映射校验
+    """
+    return json_resp(params)
+
+
+@pytest.fixture
+def client():
+    """ 构建测试用例
+    """
+    app.config["TESTING"] = True
+    return app.test_client()

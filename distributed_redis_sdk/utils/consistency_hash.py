@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-
+(C) Rgc <2020956572@qq.com>
 All rights reserved
-create time '2020/7/16 11:08'
+create time '2020/7/22 14:31'
 
 Usage:
 
 """
+
 from zlib import crc32
 
 
