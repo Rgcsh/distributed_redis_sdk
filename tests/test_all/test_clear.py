@@ -18,4 +18,4 @@ class TestClear(TestBase):
         """
         client.get('api/cache_set/clear_a/1/1')
         get_result = client.get(f'api/clear/0')
-        self.check_result(get_result, b'1')
+        self.check_un_equal(get_result, b'false')

@@ -101,14 +101,29 @@ class DistributedRedisSdk(Redis):
         # 在init_app时，为flask app注册权限中间件
         log.info("成功注册 分布式缓存 中间件")
 
-    def get_redis_node_obj(self, key):
+    def _use_prefix(self, key: list or str, use_prefix):
+        """
+        是否使用前缀,使用则添加
+        :param use_prefix:
+        :return:
+        """
+        if use_prefix:
+            if isinstance(key, list):
+                key = [self._get_prefix() + item for item in key]
+            else:
+                key = self._get_prefix() + key
+        return key
+
+    def get_redis_node_obj(self, key, use_prefix=False):
         """
         通过key生成hashkey,获取对应 节点的redis obj
         注意:此处获取的redis对象是直接从redis包导入的,可以进行任何操作,不会对 execute_command进行修改
         :param key:
+        :param use_prefix:默认不使用添加key的前缀
         :return:
         """
         hash_map = get_hash_ring_map(self.manager_redis_obj)
+        key = self._use_prefix(key, use_prefix)
         node_url = ConsistencyHash(hash_map).get_node(key)
         return self.redis_from_url(node_url)
 
@@ -220,8 +235,7 @@ class DistributedRedisSdk(Redis):
 
         result = None
         for key, value in iteritems_wrapper(mapping):
-            if use_prefix:
-                key = self._get_prefix() + key
+            key = self._use_prefix(key, use_prefix)
             result = self.cache_set(key, value, timeout)
 
         return result
@@ -241,8 +255,7 @@ class DistributedRedisSdk(Redis):
         if not keys or not isinstance(keys, list):
             raise Exception('get_many的keys值必须为list类型,且不能为空')
 
-        if use_prefix:
-            keys = [self._get_prefix() + key for key in keys]
+        keys = self._use_prefix(keys, use_prefix)
 
         result_list = []
         for key in keys:
@@ -269,8 +282,7 @@ class DistributedRedisSdk(Redis):
         >>> self.cache_set(1,'test',10) # 缓存10s
         """
         dump = dump_object(value)
-        if use_prefix:
-            name = self._get_prefix() + name
+        name = self._use_prefix(name, use_prefix)
         cache = self.get_redis_node_obj(name)
         timeout = normalize_timeout(timeout, self.default_timeout)
 
@@ -281,13 +293,15 @@ class DistributedRedisSdk(Redis):
         return result
 
     @try_times_default
-    def cache_get(self, key, cache_obj=None):
+    def cache_get(self, key, cache_obj=None, use_prefix=False):
         """
         获取缓存的二进制数据,并还原为原来的对象
         :param key:
         :param cache_obj:缓存对象,不传此值时,则 通过key 生成缓存对象
+        :param use_prefix:默认不使用添加key的前缀
         :return:
         """
+        key = self._use_prefix(key, use_prefix)
         if not cache_obj:
             cache_obj = self.get_redis_node_obj(key)
 
@@ -300,8 +314,7 @@ class DistributedRedisSdk(Redis):
         :param use_prefix:是否添加前缀,默认不添加
         :return:
         """
-        if use_prefix:
-            key = self._get_prefix() + key
+        key = self._use_prefix(key, use_prefix)
 
         cache = self.get_redis_node_obj(key)
         return cache.delete(key)
@@ -315,8 +328,7 @@ class DistributedRedisSdk(Redis):
         :param use_prefix:是否添加前缀,默认不添加
         :return:
         """
-        if use_prefix:
-            key = self._get_prefix() + key
+        key = self._use_prefix(key, use_prefix)
 
         if not cache_obj:
             cache_obj = self.get_redis_node_obj(key)
@@ -334,10 +346,10 @@ class DistributedRedisSdk(Redis):
         >>>self.delete_many(['a','b'],Ture)
 
         """
-        if not keys:
+        if not keys or not isinstance(keys, list):
             return
-        if use_prefix:
-            keys = [self._get_prefix() + key for key in keys]
+        keys = self._use_prefix(keys, use_prefix)
+
         result = None
         for key in keys:
             result = self.cache_delete(key)
@@ -477,7 +489,7 @@ class DistributedRedisSdk(Redis):
                         cache_key = _make_cache_key(
                             args, kwargs, use_request=True
                         )
-                    cache_key = self._get_prefix() + cache_key
+                    cache_key = self._use_prefix(cache_key, True)
                     cache = self.get_redis_node_obj(cache_key)
                     if (
                             callable(forced_update)
@@ -865,7 +877,7 @@ class DistributedRedisSdk(Redis):
                     cache_key = decorated_function.make_cache_key(
                         f, *args, **kwargs
                     )
-                    cache_key = self._get_prefix() + cache_key
+                    cache_key = self._use_prefix(cache_key, True)
                     # 根据缓存key获取redis节点对象
                     cache = self.get_redis_node_obj(cache_key)
                     if (
@@ -1047,8 +1059,7 @@ class DistributedRedisSdk(Redis):
             return self._memoize_version(f, reset=True)
         else:
             cache_key = f.make_cache_key(f.uncached, *args, **kwargs)
-            cache_key = self.key_prefix + cache_key
-            return self.cache_delete(cache_key)
+            return self.cache_delete(cache_key, True)
 
     def delete_memoized_verhash(self, f, *args):
         """Delete the version hash associated with the function.

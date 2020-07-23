@@ -16,4 +16,4 @@ class TestExecute(TestBase):
         """ 通过 基础命令 测试 execute_command 函数
         """
         get_result = client.get('/api/execute/execute_test/1')
-        self.check_result(get_result, b'1')
+        self.check_result(get_result, b'"1"')

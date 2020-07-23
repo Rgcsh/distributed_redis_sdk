@@ -14,7 +14,7 @@ from datetime import datetime
 import pytest
 from flask import Flask, make_response, request
 
-from distributed_redis_sdk import DistributedRedisSdk
+from distributed_redis_sdk import DistributedRedisSdk, byte2str
 
 app = Flask(__name__)
 
@@ -36,6 +36,8 @@ redis = DistributedRedisSdk(app)
 
 
 def json_resp(result):
+    if isinstance(result, bytes):
+        result = byte2str(result)
     result = json.dumps(result)
     resp = make_response(result)
     resp.headers['Content-Type'] = 'application/json'
@@ -49,7 +51,8 @@ def api_execute(key, val):
     :return:
     """
     redis.set(key, val)
-    return json_resp(redis.get(key))
+    result = redis.get(key)
+    return json_resp(result)
 
 
 @app.route("/api/set_many")
