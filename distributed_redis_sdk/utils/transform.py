@@ -92,14 +92,28 @@ def iteritems_wrapper(mappingorseq):
 
 
 def memoize_make_version_hash():
+    """
+
+    :return:
+    """
     return base64.b64encode(uuid.uuid4().bytes)[:6].decode("utf-8")
 
 
 def memvname(funcname):
+    """
+
+    :param funcname:
+    :return:
+    """
     return funcname + "_memver"
 
 
 def get_id(obj):
+    """
+
+    :param obj:
+    :return:
+    """
     return getattr(obj, "__caching_id__", repr)(obj)
 
 
@@ -118,7 +132,10 @@ def get_arg_names(f):
 
 
 def wants_args(f):
-    """Check if the function wants any arguments
+    """
+    Check if the function wants any arguments
+    :param f:
+    :return:
     """
 
     argspec = inspect.getfullargspec(f)
@@ -127,6 +144,12 @@ def wants_args(f):
 
 
 def get_arg_default(f, position):
+    """
+
+    :param f:
+    :param position:
+    :return:
+    """
     sig = inspect.signature(f)
     arg = list(sig.parameters.values())[position]
     arg_def = arg.default

@@ -12,12 +12,11 @@ import base64
 import functools
 import hashlib
 import inspect
-from collections import OrderedDict
 
-import redis
 from flask import request, url_for
-from redis import Redis, ConnectionPool
+from redis import Redis
 
+from .base_redis import BaseRedis
 from .exception import InvalidConfigException
 from .log_obj import log
 from .utils import iteritems_wrapper, memoize_make_version_hash, memvname, function_namespace, get_arg_names, get_id, \
@@ -27,7 +26,7 @@ from .utils.constant import *
 from .utils.redis_action import get_redis_obj, get_hash_ring_map, get_func_name
 
 
-class DistributedRedisSdk(Redis):
+class DistributedRedisSdk(BaseRedis):
     """分布式redis客户端类"""
 
     def __init__(self, app=None, config=None):
@@ -48,10 +47,8 @@ class DistributedRedisSdk(Redis):
         self.k_redis_port = k_redis_port
         self.k_redis_password = k_redis_password
         self.k_redis_db = k_redis_db
-        self.key_prefix = k_prefix
         self.default_timeout = k_default_timeout
 
-        self.manager_redis_obj = None
         # 加载时即配置
         if app is not None:
             self.app = app
@@ -78,7 +75,7 @@ class DistributedRedisSdk(Redis):
         self.k_redis_password = config.get(k_redis_password)
         self.k_redis_db = config.get(k_redis_db)
         self.key_prefix = config.get(k_prefix)
-        if not self.key_prefix:
+        if not self.key_prefix or not isinstance(self.key_prefix, str):
             raise Exception('分布式缓存前缀配置DIS_CACHE_PREFIX必须设置,并且不同项目不能重复')
         self.default_timeout = config.get(k_default_timeout) or 300  # 缓存默认过期时间
 
@@ -94,7 +91,7 @@ class DistributedRedisSdk(Redis):
         self.extend_flask_middleware()
 
         app.extensions["distributed_redis_sdk"] = self
-    
+
     @classmethod
     def extend_flask_middleware(cls):
         """ 扩展Flask中间件
@@ -102,148 +99,7 @@ class DistributedRedisSdk(Redis):
         # 在init_app时，为flask app注册权限中间件
         log.info("成功注册 分布式缓存 中间件")
 
-    def _use_prefix(self, key: list or str or int, use_prefix):
-        """
-        是否使用前缀,使用则添加
-        :param use_prefix:
-        :return:
-        """
-        if not isinstance(key, (list, str, int)):
-            raise TypeError
-        if use_prefix:
-            if isinstance(key, list):
-                key = [self._get_prefix() + str(item) for item in key]
-            else:
-                key = self._get_prefix() + str(key)
-        return key
-
-    def _cache_obj(self, key, cache_obj):
-        """
-        是否生成 Redis对象
-        :return:
-        """
-        if not cache_obj:
-            cache_obj = self.get_redis_node_obj(key)
-        elif not isinstance(cache_obj, Redis):
-            raise LookupError('cache_obj必须是Redis对象')
-        return cache_obj
-
-    def get_redis_node_obj(self, key: str or int, use_prefix=False):
-        """
-        通过key生成hashkey,获取对应 节点的redis obj
-        注意:此处获取的redis对象是直接从redis包导入的,可以进行任何操作,不会对 execute_command进行修改
-        :param key:
-        :param use_prefix:默认不使用添加key的前缀
-        :return:
-        """
-        if not isinstance(key, (str, int)):
-            raise TypeError
-
-        hash_map = get_hash_ring_map(self.manager_redis_obj)
-        key = self._use_prefix(key, use_prefix)
-        node_url = ConsistencyHash(hash_map).get_node(key)
-        return self._redis_from_url(node_url)
-
-    @classmethod
-    def _redis_from_url(cls, node_url: str):
-        """
-        通过url获取redis对象
-        注意:此处获取的redis对象是直接从redis包导入的,可以进行任何操作,不会对 execute_command进行修改
-        :param node_url:
-        :return:
-        """
-        return redis.from_url(node_url)
-
-    def get_all_node_url(self):
-        """
-        获取所有node redis的真实url
-        :return:
-        """
-        hash_map = get_hash_ring_map(self.manager_redis_obj)
-        return set(hash_map.values())
-
-    @try_times_default
-    def execute_command(self, *args, **options):
-        """
-        Execute a command and return a parsed response
-        继承自Redis对象的 执行具体命令的函数,对此函数进行修改
-        修改内容为:
-        通过key调用一致性hash算法获取对应redis节点的url
-        通过url获取连接池,然后进行后续原来的操作
-        优点:
-        在调用此sdk时,可以像使用普通 redis sdk一样操作,如 DistributedRedisSdk().set() 等等方法进行操作
-
-        警告:
-        1.Redis的有些命令函数(如:client_id) 不需要 key,所以在调用此函数时会存在 参数不足2个的情况,针对此情况 直接Raise错误
-        2.Redis的有些命令函数 的第一个参数不是 key,即使分配到了节点上也是错误的结果,这种也不能使用
-        :param args:
-        :param options:
-        :return:
-        """
-        # 某些命令 不能分配到节点,此处进行校验
-        # 判断参数长度不能小于2个(如果小于,说明肯定没有key)
-        if len(args) < 2:
-            raise Exception('此分布式redis对象不支持使用此方法,因为没有key,无法定位到具体redis节点,'
-                            '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
-
-        # 通过 command_name 找到对应的函数名,然后找到对应参数
-        command_name = args[0]
-        func_name = get_func_name(command_name)
-        command_func = getattr(Redis, func_name)
-        func_params = command_func.__code__.co_varnames
-        # 第二个参数 进行校验,command_name不在指定的list中
-        allow_command_list = ['touch']
-        if func_params[1] not in ['key', 'keys', 'name', 'names', 'src'] and func_name not in allow_command_list:
-            raise Exception('此分布式redis对象不支持使用此方法,因为没有key或name,无法定位到具体redis节点,'
-                            '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
-
-        # 某些命令不能找到对应节点
-        not_allowed_command_list = ['config_set']
-        if command_name in not_allowed_command_list:
-            raise Exception('此分布式redis对象不支持使用此方法,无法定位到具体redis节点,'
-                            '请使用 get_redis_obj() 函数获取具体节点对象进行后续操作')
-
-        # 获取 执行的redis命令
-        # 获取操作的 key
-        key = args[1]
-        if not isinstance(key, (int, str)):
-            raise TypeError
-        if isinstance(key, int):
-            key = str(key)
-
-        # 通过key获取对应的节点url
-        hash_map = get_hash_ring_map(self.manager_redis_obj)
-        node_url = ConsistencyHash(hash_map).get_node(key)
-        log.info(f'node_url:{node_url},key:{key},command_name:{command_name}')
-
-        # 通过节点url获取redis对象的 连接池
-        pool = ConnectionPool.from_url(node_url)
-        conn = self.connection or pool.get_connection(command_name, **options)
-        try:
-            conn.send_command(*args)
-            return self.parse_response(conn, command_name, **options)
-        except (ConnectionError, TimeoutError) as e:
-            conn.disconnect()
-            if not (conn.retry_on_timeout and isinstance(e, TimeoutError)):
-                raise
-            conn.send_command(*args)
-            return self.parse_response(conn, command_name, **options)
-        finally:
-            if not self.connection:
-                pool.release(conn)
-
     # -------通过装饰器 缓存函数 部分 start---------
-    def _get_prefix(self):
-        """
-        获取缓存前缀
-        :return:
-        """
-        return (
-            self.key_prefix
-            if isinstance(self.key_prefix, str)
-            else self.key_prefix()
-        )
-
     def set_many(self, mapping: dict, timeout=None, use_prefix=False):
         """
         设置多个值
@@ -382,11 +238,11 @@ class DistributedRedisSdk(Redis):
         :return:
         """
         status = False
-        node_url_list = self.get_all_node_url()
+        node_url_list = self._get_all_node_url()
         for node_url in node_url_list:
             cache = self._redis_from_url(node_url)
             if use_prefix:
-                keys = cache.keys(self._get_prefix() + "*")
+                keys = cache.keys(self.key_prefix + "*")
             else:
                 keys = cache.keys("*")
 
@@ -509,15 +365,9 @@ class DistributedRedisSdk(Redis):
                         )
                     cache_key = self._use_prefix(cache_key, True)
                     cache = self.get_redis_node_obj(cache_key)
-                    if (
-                            callable(forced_update)
-                            and (
-                            forced_update(*args, **kwargs)
-                            if wants_args(forced_update)
-                            else forced_update()
-                    )
-                            is True
-                    ):
+                    if (callable(forced_update) and
+                            (forced_update(*args, **kwargs) if wants_args(forced_update) else forced_update())
+                            is True):
                         rv = None
                         found = False
                     else:
@@ -594,7 +444,7 @@ class DistributedRedisSdk(Redis):
                 cache_key = request.path + hashed_args
                 return cache_key
 
-            def _make_cache_key(args, kwargs, use_request):
+            def _make_cache_key(args, kwargs, use_request):  # pylint:disable=unused-argument
                 if callable(key_prefix):
                     cache_key = key_prefix()
                 elif "%s" in key_prefix:
@@ -646,15 +496,8 @@ class DistributedRedisSdk(Redis):
         version_data_list = list(self.get_many(fetch_keys, True))
         dirty = False
 
-        if (
-                callable(forced_update)
-                and (
-                forced_update(*(args or ()), **(kwargs or {}))
-                if wants_args(forced_update)
-                else forced_update()
-        )
-                is True
-        ):
+        if (callable(forced_update) and
+                (forced_update(*(args or ()), **(kwargs or {})) if wants_args(forced_update) else forced_update()) is True):
             # Mark key as dirty to update its TTL
             dirty = True
 
@@ -715,93 +558,6 @@ class DistributedRedisSdk(Redis):
             return cache_key
 
         return make_cache_key
-
-    def _memoize_kwargs_to_args(self, f, *args, **kwargs):
-        #: Inspect the arguments to the function
-        #: This allows the memoization to be the same
-        #: whether the function was called with
-        #: 1, b=2 is equivilant to a=1, b=2, etc.
-        new_args = []
-        arg_num = 0
-
-        # If the function uses VAR_KEYWORD type of parameters,
-        # we need to pass these further
-        kw_keys_remaining = list(kwargs.keys())
-        arg_names = get_arg_names(f)
-        args_len = len(arg_names)
-
-        for i in range(args_len):
-            arg_default = get_arg_default(f, i)
-            if i == 0 and arg_names[i] in ("self", "cls"):
-                #: use the id func of the class instance
-                #: this supports instance methods for
-                #: the memoized functions, giving more
-                #: flexibility to developers
-                arg = get_id(args[0])
-                arg_num += 1
-            elif arg_names[i] in kwargs:
-                arg = kwargs[arg_names[i]]
-                kw_keys_remaining.pop(kw_keys_remaining.index(arg_names[i]))
-            elif arg_num < len(args):
-                arg = args[arg_num]
-                arg_num += 1
-            elif arg_default:
-                arg = arg_default
-                arg_num += 1
-            else:
-                arg = None
-                arg_num += 1
-
-            #: Attempt to convert all arguments to a
-            #: hash/id or a representation?
-            #: Not sure if this is necessary, since
-            #: using objects as keys gets tricky quickly.
-            # if hasattr(arg, '__class__'):
-            #     try:
-            #         arg = hash(arg)
-            #     except:
-            #         arg = get_id(arg)
-
-            #: Or what about a special __cacherepr__ function
-            #: on an object, this allows objects to act normal
-            #: upon inspection, yet they can define a representation
-            #: that can be used to make the object unique in the
-            #: cache key. Given that a case comes across that
-            #: an object "must" be used as a cache key
-            # if hasattr(arg, '__cacherepr__'):
-            #     arg = arg.__cacherepr__
-
-            new_args.append(arg)
-
-        new_args.extend(args[len(arg_names):])
-        return (
-            tuple(new_args),
-            OrderedDict(
-                sorted(
-                    (k, v) for k, v in kwargs.items() if k in kw_keys_remaining
-                )
-            ),
-        )
-
-    def _bypass_cache(self, unless, f, *args, **kwargs):
-        """Determines whether or not to bypass the cache by calling unless().
-        Supports both unless() that takes in arguments and unless()
-        that doesn't.
-        """
-        bypass_cache = False
-
-        if callable(unless):
-            argspec = inspect.getfullargspec(unless)
-            has_args = len(argspec.args) > 0 or argspec.varargs or argspec.varkw
-
-            # If unless() takes args, pass them in.
-            if has_args:
-                if unless(f, *args, **kwargs) is True:
-                    bypass_cache = True
-            elif unless() is True:
-                bypass_cache = True
-
-        return bypass_cache
 
     def memoize(
             self,
@@ -898,15 +654,8 @@ class DistributedRedisSdk(Redis):
                     cache_key = self._use_prefix(cache_key, True)
                     # 根据缓存key获取redis节点对象
                     cache = self.get_redis_node_obj(cache_key)
-                    if (
-                            callable(forced_update)
-                            and (
-                            forced_update(*args, **kwargs)
-                            if wants_args(forced_update)
-                            else forced_update()
-                    )
-                            is True
-                    ):
+                    if (callable(forced_update) and
+                            (forced_update(*args, **kwargs) if wants_args(forced_update) else forced_update()) is True):
                         rv = None
                         found = False
                     else:
@@ -1034,9 +783,9 @@ class DistributedRedisSdk(Redis):
             3.72341788
 
         :param fname: The memoized function.
-        :param \*args: A list of positional parameters used with
+        :param *args: A list of positional parameters used with
                        memoized function.
-        :param \**kwargs: A dict of named parameters used with
+        :param **kwargs: A dict of named parameters used with
                           memoized function.
 
         .. note::
@@ -1079,7 +828,7 @@ class DistributedRedisSdk(Redis):
             cache_key = f.make_cache_key(f.uncached, *args, **kwargs)
             return self.cache_delete(cache_key, True)
 
-    def delete_memoized_verhash(self, f, *args):
+    def delete_memoized_verhash(self, f, *args):  # pylint:disable=unused-argument
         """Delete the version hash associated with the function.
 
         .. warning::

@@ -56,7 +56,7 @@ def try_times(repeat_times, sleep_time):
                     else:
                         print(f'重试{_ + 1}次,然后报错')
                         raise
-                except Exception as __:
+                except Exception as __:  # pylint:disable=try-except-raise
                     raise
 
         return decorator

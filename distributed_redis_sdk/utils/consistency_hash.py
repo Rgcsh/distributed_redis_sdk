@@ -12,6 +12,7 @@ from zlib import crc32
 
 
 class ConsistencyHash(object):
+    """一致性hash类"""
     def __init__(self, ring: dict):
         """
 
