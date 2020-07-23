@@ -94,8 +94,9 @@ class DistributedRedisSdk(Redis):
         self.extend_flask_middleware()
 
         app.extensions["distributed_redis_sdk"] = self
-
-    def extend_flask_middleware(self):
+    
+    @classmethod
+    def extend_flask_middleware(cls):
         """ 扩展Flask中间件
         """
         # 在init_app时，为flask app注册权限中间件

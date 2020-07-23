@@ -14,7 +14,7 @@ from datetime import datetime
 
 from flask import Flask, request, make_response, render_template_string
 
-from distributed_redis_sdk import DistributedRedisSdk
+from distributed_redis_sdk import DistributedRedisSdk, byte2str
 from examples.config import Config
 
 app = Flask(__name__)
@@ -24,6 +24,8 @@ redis = DistributedRedisSdk(app)
 
 
 def json_resp(result):
+    if isinstance(result, bytes):
+        result = byte2str(result)
     result = json.dumps(result)
     resp = make_response(result)
     resp.headers['Content-Type'] = 'application/json'
