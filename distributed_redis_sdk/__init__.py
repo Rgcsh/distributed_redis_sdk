@@ -101,20 +101,33 @@ class DistributedRedisSdk(Redis):
         # 在init_app时，为flask app注册权限中间件
         log.info("成功注册 分布式缓存 中间件")
 
-    def _use_prefix(self, key: list or str, use_prefix):
+    def _use_prefix(self, key: list or str or int, use_prefix):
         """
         是否使用前缀,使用则添加
         :param use_prefix:
         :return:
         """
+        if not isinstance(key, (list, str, int)):
+            raise TypeError
         if use_prefix:
             if isinstance(key, list):
-                key = [self._get_prefix() + item for item in key]
+                key = [self._get_prefix() + str(item) for item in key]
             else:
-                key = self._get_prefix() + key
+                key = self._get_prefix() + str(key)
         return key
 
-    def get_redis_node_obj(self, key, use_prefix=False):
+    def _cache_obj(self, key, cache_obj):
+        """
+        是否生成 Redis对象
+        :return:
+        """
+        if not cache_obj:
+            cache_obj = self.get_redis_node_obj(key)
+        elif not isinstance(cache_obj, Redis):
+            raise LookupError('cache_obj必须是Redis对象')
+        return cache_obj
+
+    def get_redis_node_obj(self, key: str or int, use_prefix=False):
         """
         通过key生成hashkey,获取对应 节点的redis obj
         注意:此处获取的redis对象是直接从redis包导入的,可以进行任何操作,不会对 execute_command进行修改
@@ -122,13 +135,16 @@ class DistributedRedisSdk(Redis):
         :param use_prefix:默认不使用添加key的前缀
         :return:
         """
+        if not isinstance(key, (str, int)):
+            raise TypeError
+
         hash_map = get_hash_ring_map(self.manager_redis_obj)
         key = self._use_prefix(key, use_prefix)
         node_url = ConsistencyHash(hash_map).get_node(key)
-        return self.redis_from_url(node_url)
+        return self._redis_from_url(node_url)
 
     @classmethod
-    def redis_from_url(cls, node_url):
+    def _redis_from_url(cls, node_url: str):
         """
         通过url获取redis对象
         注意:此处获取的redis对象是直接从redis包导入的,可以进行任何操作,不会对 execute_command进行修改
@@ -189,6 +205,11 @@ class DistributedRedisSdk(Redis):
         # 获取 执行的redis命令
         # 获取操作的 key
         key = args[1]
+        if not isinstance(key, (int, str)):
+            raise TypeError
+        if isinstance(key, int):
+            key = str(key)
+
         # 通过key获取对应的节点url
         hash_map = get_hash_ring_map(self.manager_redis_obj)
         node_url = ConsistencyHash(hash_map).get_node(key)
@@ -230,8 +251,8 @@ class DistributedRedisSdk(Redis):
         :param use_prefix: 默认不在key添加 前缀
         :return:
         """
-        if not mapping or not isinstance(mapping, dict):
-            raise Exception('set_many的mapping值必须为dict类型,且不能为空')
+        if not isinstance(mapping, dict):
+            raise TypeError
 
         result = None
         for key, value in iteritems_wrapper(mapping):
@@ -252,9 +273,8 @@ class DistributedRedisSdk(Redis):
         >>>self.get_many(['a','b'],True)
 
         """
-        if not keys or not isinstance(keys, list):
-            raise Exception('get_many的keys值必须为list类型,且不能为空')
-
+        if not isinstance(keys, list):
+            raise TypeError
         keys = self._use_prefix(keys, use_prefix)
 
         result_list = []
@@ -264,7 +284,7 @@ class DistributedRedisSdk(Redis):
         return result_list
 
     @try_times_default
-    def cache_set(self, name, value, timeout=None, use_prefix=False):
+    def cache_set(self, name: str or int, value, timeout=None, use_prefix=False):
         """
         设置缓存,直接存储value的二进制数据(不会转为bytes),timeout值不填写,则过期时间为 设置的过期时间或者300s
         :param name:
@@ -281,6 +301,8 @@ class DistributedRedisSdk(Redis):
         >>> self.cache_set(1,'test',-2) # 缓存永久
         >>> self.cache_set(1,'test',10) # 缓存10s
         """
+        if timeout and not isinstance(timeout, int):
+            raise TypeError
         dump = dump_object(value)
         name = self._use_prefix(name, use_prefix)
         cache = self.get_redis_node_obj(name)
@@ -302,9 +324,7 @@ class DistributedRedisSdk(Redis):
         :return:
         """
         key = self._use_prefix(key, use_prefix)
-        if not cache_obj:
-            cache_obj = self.get_redis_node_obj(key)
-
+        cache_obj = self._cache_obj(key, cache_obj)
         return load_object(cache_obj.get(key))
 
     def cache_delete(self, key, use_prefix=False):
@@ -315,7 +335,6 @@ class DistributedRedisSdk(Redis):
         :return:
         """
         key = self._use_prefix(key, use_prefix)
-
         cache = self.get_redis_node_obj(key)
         return cache.delete(key)
 
@@ -329,9 +348,7 @@ class DistributedRedisSdk(Redis):
         :return:
         """
         key = self._use_prefix(key, use_prefix)
-
-        if not cache_obj:
-            cache_obj = self.get_redis_node_obj(key)
+        cache_obj = self._cache_obj(key, cache_obj)
         return cache_obj.exists(key)
 
     def delete_many(self, keys: list, use_prefix=False):
@@ -346,11 +363,11 @@ class DistributedRedisSdk(Redis):
         >>>self.delete_many(['a','b'],Ture)
 
         """
-        if not keys or not isinstance(keys, list):
-            return
+        result = None
+        if not isinstance(keys, list):
+            raise TypeError
         keys = self._use_prefix(keys, use_prefix)
 
-        result = None
         for key in keys:
             result = self.cache_delete(key)
         return result
@@ -366,7 +383,7 @@ class DistributedRedisSdk(Redis):
         status = False
         node_url_list = self.get_all_node_url()
         for node_url in node_url_list:
-            cache = self.redis_from_url(node_url)
+            cache = self._redis_from_url(node_url)
             if use_prefix:
                 keys = cache.keys(self._get_prefix() + "*")
             else:

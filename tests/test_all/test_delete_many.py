@@ -22,6 +22,6 @@ class TestDeleteMany(TestBase):
     def test_have_data(self, client):
         """ 测试 有数据的情况
         """
-        client.get('api/cache_set/cache_delete_b/1/1')
+        client.get('api/cache_set/cache_delete_b/1/1/0/0')
         get_result = client.get(f'api/delete_many?keys=["cache_delete_b"]&use_prefix=0')
         self.check_result(get_result, b'1')

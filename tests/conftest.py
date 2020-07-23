@@ -83,13 +83,17 @@ def api_get_many():
     return json_resp(redis.get_many(keys, use_prefix))
 
 
-@app.route("/api/cache_set/<string:name>/<string:value>/<int:timeout>")
-def api_cache_set(name, value, timeout):
+@app.route("/api/cache_set/<string:name>/<string:value>/<int:timeout>/<int:use_prefix>/<int:is_int>")
+def api_cache_set(name, value, timeout, use_prefix, is_int):
     """
     测试 cache_set 函数
     :return:
     """
-    result = redis.cache_set(name, value, timeout)
+    if is_int:
+        result = redis.cache_set(int(name), int(value), timeout, use_prefix)
+    else:
+        result = redis.cache_set(name, value, timeout, use_prefix)
+
     return json_resp(result)
 
 

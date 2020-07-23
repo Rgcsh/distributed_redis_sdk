@@ -22,6 +22,6 @@ class TestDelete(TestBase):
     def test_have_data(self, client):
         """ 测试 有数据的情况
         """
-        client.get('api/cache_set/cache_delete_a/1/1')
-        get_result = client.get(f'api/cache_delete/cache_delete_a')
+        client.get('api/cache_set/cache_delete_b/1/1/0/0')
+        get_result = client.get(f'api/cache_delete/cache_delete_b')
         self.check_result(get_result, b'1')
