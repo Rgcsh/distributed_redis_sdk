@@ -15,14 +15,16 @@ from redis import ConnectionPool
 from redis import Redis
 
 from .log_obj import log
-from .utils import get_arg_names, get_id, \
-    get_arg_default, try_times_default, k_prefix
-from .utils.consistency_hash import ConsistencyHash
-from .utils.redis_action import get_hash_ring_map, get_func_name
+from .utils import get_arg_names, get_id, get_arg_default, try_times_default, k_prefix, get_hash_ring_map, get_func_name, \
+    ConsistencyHash
 
 
 class BaseRedis(Redis):
-    """redis基类"""
+    """
+    redis基类
+    1.对 execute_command进行二次开发
+    2.扩充些 供 子类或内部使用的 方法
+    """
 
     def __init__(self, ):
         super(BaseRedis, self).__init__()

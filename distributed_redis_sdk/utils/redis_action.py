@@ -5,14 +5,14 @@ All rights reserved
 create time '2020/7/22 14:31'
 
 Usage:
-
+对redis进行操作
 """
-
-
 
 from redis import Redis
 
-from . import HASH_RING_MAP, byte2str, try_times_default
+from .constant import HASH_RING_MAP
+from .decorator import try_times_default
+from .transform import byte2str
 
 
 def url_format(*args, **kwargs):

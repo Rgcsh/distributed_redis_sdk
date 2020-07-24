@@ -20,10 +20,9 @@ from .base_redis import BaseRedis
 from .exception import InvalidConfigException
 from .log_obj import log
 from .utils import iteritems_wrapper, memoize_make_version_hash, memvname, function_namespace, get_arg_names, get_id, \
-    wants_args, get_arg_default, dump_object, load_object, normalize_timeout, try_times, try_times_default, byte2str
-from .utils.consistency_hash import ConsistencyHash
+    wants_args, get_arg_default, dump_object, load_object, normalize_timeout, try_times, try_times_default, byte2str, \
+    ConsistencyHash, get_redis_obj, get_hash_ring_map, get_func_name
 from .utils.constant import *
-from .utils.redis_action import get_redis_obj, get_hash_ring_map, get_func_name
 
 
 class DistributedRedisSdk(BaseRedis):
